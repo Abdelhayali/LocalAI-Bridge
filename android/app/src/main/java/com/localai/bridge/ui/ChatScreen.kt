@@ -77,6 +77,9 @@ import androidx.compose.material.icons.filled.Screenshot
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Switch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -99,6 +102,7 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
     val ctx = LocalContext.current
     val listState = rememberLazyListState()
     var attachMenu by remember { mutableStateOf(false) }
+    var confirmAuto by remember { mutableStateOf(false) }
     var modelMenu by remember { mutableStateOf(false) }
     var cameraUri by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -211,10 +215,24 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                 }
             }
 
+            // ---- active modes (tap to turn off) - kept out of the input row so the text field stays wide
+            if (vm.webSearch || vm.autoApprove) {
+                Row(Modifier.padding(start = 12.dp, top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (vm.webSearch) InputChip(selected = true, onClick = { vm.toggleWebSearch() },
+                        label = { Text("Web search") },
+                        leadingIcon = { Icon(Icons.Default.Public, null, Modifier.size(16.dp)) },
+                        trailingIcon = { Icon(Icons.Default.Close, "Turn off", Modifier.size(14.dp)) })
+                    if (vm.autoApprove) InputChip(selected = true, onClick = { vm.updateAutoApprove(false) },
+                        label = { Text("Auto-approve", color = MaterialTheme.colorScheme.error) },
+                        leadingIcon = { Icon(Icons.Default.Bolt, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error) },
+                        trailingIcon = { Icon(Icons.Default.Close, "Turn off", Modifier.size(14.dp)) })
+                }
+            }
+
             // ---- input bar
             Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(8.dp), verticalAlignment = Alignment.Bottom) {
                 Box {
-                    IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.AttachFile, "Attach") }
+                    IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.AttachFile, "Attach and options") }
                     DropdownMenu(attachMenu, { attachMenu = false }) {
                         DropdownMenuItem(text = { Text("Image") }, leadingIcon = { Icon(Icons.Default.Image, null) },
                             onClick = { attachMenu = false; pickFiles.launch(arrayOf("image/*")) })
@@ -230,16 +248,21 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                                 if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) launchCamera()
                                 else camPermission.launch(Manifest.permission.CAMERA)
                             })
+                        HorizontalDivider()
+                        DropdownMenuItem(text = { Text("Web search") }, leadingIcon = { Icon(Icons.Default.Public, null) },
+                            trailingIcon = { Switch(checked = vm.webSearch, onCheckedChange = null) },
+                            onClick = { vm.toggleWebSearch() })
+                        DropdownMenuItem(text = { Text("Auto-approve") }, leadingIcon = { Icon(Icons.Default.Bolt, null) },
+                            trailingIcon = { Switch(checked = vm.autoApprove, onCheckedChange = null) },
+                            onClick = {
+                                if (vm.autoApprove) vm.updateAutoApprove(false)
+                                else { attachMenu = false; confirmAuto = true }
+                            })
                     }
-                }
-                IconButton(onClick = { vm.toggleWebSearch() }) {
-                    Icon(Icons.Default.Public, if (vm.webSearch) "Web search on" else "Web search off",
-                        tint = if (vm.webSearch) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
                 }
                 OutlinedTextField(
                     value = vm.draft, onValueChange = { vm.draft = it },
-                    placeholder = { Text(if (vm.webSearch) "Message (web search on)…" else "Message your local AI…") },
+                    placeholder = { Text("Message…") },
                     modifier = Modifier.weight(1f).heightIn(max = 160.dp),
                     shape = RoundedCornerShape(24.dp),
                 )
@@ -257,6 +280,16 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
     }
 
     vm.approvals.firstOrNull()?.let { ApprovalDialog(it, vm) }
+    if (confirmAuto) AlertDialog(
+        onDismissRequest = { confirmAuto = false },
+        title = { Text("Turn on auto-approve?") },
+        text = {
+            Text("The AI will run code and write files on your PC without asking. A malicious web page, PDF or " +
+                "file the AI reads could trick it into running harmful commands. Only use this with content you trust.")
+        },
+        confirmButton = { TextButton(onClick = { vm.updateAutoApprove(true); confirmAuto = false }) { Text("Turn on") } },
+        dismissButton = { TextButton(onClick = { confirmAuto = false }) { Text("Cancel") } },
+    )
 }
 
 private fun kfmt(n: Long): String = when {
