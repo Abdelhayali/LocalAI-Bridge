@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Settings
@@ -92,6 +93,20 @@ fun PairScreen(vm: MainViewModel) {
         scope.launch { error = vm.pair(url, token); busy = false }
     }
 
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val pickQr = rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val text = com.localai.bridge.data.decodeQrImage(ctx, uri)
+            val p = text?.let { vm.parsePairQr(it) }
+            when {
+                p != null -> { url = p.url; token = p.token; connect() }
+                text == null -> error = "No QR code found in that image"
+                else -> error = "That QR code is not a LocalAI Bridge pairing code"
+            }
+        }
+    }
+
     val scanner = rememberLauncherForActivityResult(ScanContract()) { r ->
         val p = r.contents?.let { vm.parsePairQr(it) }
         if (p != null) { url = p.url; token = p.token; connect() }
@@ -112,7 +127,10 @@ fun PairScreen(vm: MainViewModel) {
             },
             modifier = Modifier.fillMaxWidth(), enabled = !busy,
         ) {
-            Icon(Icons.Default.QrCodeScanner, null); Spacer(Modifier.size(8.dp)); Text("Scan QR code")
+            Icon(Icons.Default.QrCodeScanner, null); Spacer(Modifier.size(8.dp)); Text("Scan QR code with camera")
+        }
+        OutlinedButton(onClick = { pickQr.launch("image/*") }, modifier = Modifier.fillMaxWidth(), enabled = !busy) {
+            Icon(Icons.Default.Image, null); Spacer(Modifier.size(8.dp)); Text("Load QR from image / screenshot")
         }
         Text("or enter manually", style = MaterialTheme.typography.labelMedium, modifier = Modifier.align(Alignment.CenterHorizontally))
         OutlinedTextField(url, { url = it }, label = { Text("Server URL (https://....trycloudflare.com)") },

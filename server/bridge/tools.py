@@ -137,6 +137,66 @@ def _recent_images(root: Path, since: float, limit=6) -> list[Path]:
     return sorted(hits, key=lambda p: p.stat().st_mtime)[-limit:]
 
 
+# ---------------- web ----------------
+def web_search(query: str, max_results: int = 6) -> str:
+    from ddgs import DDGS
+    try:
+        results = DDGS().text(query, max_results=max_results)
+    except Exception:  # search backends fail intermittently; one retry usually works
+        time.sleep(1.5)
+        results = DDGS().text(query, max_results=max_results)
+    if not results:
+        return "No results."
+    return "\n\n".join(f"[{i + 1}] {r.get('title', '')}\n{r.get('href', '')}\n{r.get('body', '')}"
+                       for i, r in enumerate(results))
+
+
+def _public_host(host: str) -> bool:
+    """Block localhost / LAN / link-local targets so web pages can't be used to probe this PC or network."""
+    import ipaddress
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
+
+
+def fetch_url(url: str, max_chars: int = 20_000) -> str:
+    import html as htmllib
+    import re
+    from urllib.parse import urlparse
+    import httpx
+    for _ in range(5):  # follow redirects manually so every hop is checked
+        u = urlparse(url)
+        if u.scheme not in ("http", "https") or not u.hostname:
+            raise ToolError("Only http(s) URLs are allowed")
+        if not _public_host(u.hostname):
+            raise ToolError("Blocked: URL points to this PC or a private network")
+        r = httpx.get(url, timeout=20, follow_redirects=False,
+                      headers={"User-Agent": "Mozilla/5.0 (LocalAI Bridge)"})
+        if r.is_redirect and r.headers.get("location"):
+            url = str(r.url.join(r.headers["location"]))
+            continue
+        break
+    r.raise_for_status()
+    ctype = r.headers.get("content-type", "")
+    if "pdf" in ctype:
+        return "[PDF document - ask the user to download it, or use run_code to process it]"
+    text = r.text
+    if "html" in ctype or text.lstrip()[:15].lower().startswith(("<!doctype", "<html")):
+        text = re.sub(r"(?is)<(script|style|noscript|svg|head)[^>]*>.*?</\1>", " ", text)
+        text = re.sub(r"(?i)<br\s*/?>|</(p|div|li|h[1-6]|tr)>", "\n", text)
+        text = htmllib.unescape(re.sub(r"<[^>]+>", " ", text))
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
+    return truncate(f"URL: {r.url}\n\n{text}", max_chars)
+
+
 # ---------------- code execution ----------------
 def run_code(language: str, code: str, timeout: int | None = None) -> dict:
     if not config["enable_code_exec"]:
@@ -180,7 +240,7 @@ def _fn(name, desc, props, required):
             "parameters": {"type": "object", "properties": props, "required": required}}}
 
 
-def tool_schemas():
+def tool_schemas(web: bool = False):
     s = [
         _fn("list_dir", "List files and folders in a directory on the user's PC.",
             {"path": {"type": "string", "description": "Absolute path, or relative to the workspace"}}, ["path"]),
@@ -207,6 +267,14 @@ def tool_schemas():
                         "automatically - never call plt.show().",
                         {"language": {"type": "string", "enum": ["python", "powershell", "cmd"]},
                          "code": {"type": "string"}}, ["language", "code"]))
+    if web:
+        s += [
+            _fn("web_search", "Search the internet (DuckDuckGo). Returns titles, URLs and snippets. "
+                "Use for current events, facts you are unsure about, documentation, prices, etc.",
+                {"query": {"type": "string"}}, ["query"]),
+            _fn("fetch_url", "Download a web page and return its readable text. Use after web_search to read a result.",
+                {"url": {"type": "string"}}, ["url"]),
+        ]
     return s
 
 
@@ -249,6 +317,10 @@ def _execute_text_tool(name: str, args: dict) -> str:
             return truncate(f"{r['path']}\n" + "\n".join(lines))
         if name == "read_file":
             return read_file(args.get("path", ""))
+        if name == "web_search":
+            return web_search(args.get("query", ""))
+        if name == "fetch_url":
+            return fetch_url(args.get("url", ""))
         if name == "search_files":
             return search_files(args.get("root", ""), args.get("pattern", "*"))
         if name == "write_file":

@@ -16,6 +16,7 @@ import com.localai.bridge.data.PendingApproval
 import com.localai.bridge.data.Prefs
 import com.localai.bridge.data.ServerInfo
 import com.localai.bridge.data.SessionDto
+import com.localai.bridge.data.SessionStats
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
@@ -67,7 +68,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var draft by mutableStateOf("")
     var editingMessageId by mutableStateOf<Long?>(null)
     var themeMode by mutableStateOf(prefs.themeMode)   // system | light | dark
+    var webSearch by mutableStateOf(prefs.webSearch)   // give the model internet search
+    var autoApprove by mutableStateOf(prefs.autoApprove)   // run code / write files without asking
     private var turnCompleted = false
+
+    // live status of a running reply (shown above the input while streaming)
+    var stats by mutableStateOf<SessionStats?>(null)       // last context / speed numbers of this session
+    var phase by mutableStateOf("")                         // sending|prompt|thinking|writing|tool_args|tool|approval
+    var phaseTool by mutableStateOf("")
+    var liveTokens by mutableStateOf(0)
+    var liveTps by mutableStateOf<Double?>(null)
+    var streamStartMs by mutableStateOf(0L)
+    var lastEventMs by mutableStateOf(0L)
+    private var startupDone = false
 
     private var streamJob: Job? = null
     private var keyCounter = 0
@@ -102,6 +115,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         streamJob?.cancel()
         prefs.clear()
         prefs.themeMode = themeMode
+        prefs.webSearch = webSearch
+        prefs.autoApprove = false
+        startupDone = false
+        autoApprove = false
         api = null
         paired = false
         sessions.clear(); items.clear(); info = null; currentSessionId = null
@@ -114,9 +131,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             info = a.info()
             connectionError = null
             loadSessions()
-            val last = prefs.lastSession
-            if (currentSessionId == null) {
-                if (last.isNotBlank() && sessions.any { it.id == last }) openSession(last) else newChat()
+            // Only on the first successful connection: reopen the last chat. Later refreshes (e.g. from
+            // Settings) must not navigate away from the current screen.
+            if (!startupDone) {
+                startupDone = true
+                val last = prefs.lastSession
+                if (currentSessionId == null && last.isNotBlank() && sessions.any { it.id == last }) openSession(last)
+                else if (currentSessionId == null) currentModel = info?.defaultModel.orEmpty()
             }
         } catch (e: Exception) {
             connectionError = e.message ?: "Cannot reach server"
@@ -139,6 +160,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         currentSessionId = null
         currentTitle = "New chat"
         currentModel = info?.defaultModel.orEmpty()
+        stats = null
         items.clear(); approvals.clear()
         screen = Screen.CHAT
     }
@@ -153,6 +175,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val s = a.session(id)
             currentSessionId = s.id
             currentTitle = s.title
+            stats = s.stats
             currentModel = s.model?.takeIf { it.isNotBlank() } ?: info?.defaultModel.orEmpty()
             prefs.lastSession = s.id
             items.clear(); items.addAll(toItems(s.messages))
@@ -241,6 +264,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         items += ChatItem.User(nextKey(), text, atts)
         streaming = true
+        streamStartMs = System.currentTimeMillis()
+        phase = "sending"
         streamJob = viewModelScope.launch {
             try {
                 val sid = currentSessionId ?: a.createSession(currentModel).id.also {
@@ -248,7 +273,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     prefs.lastSession = it
                 }
                 if (editId != null) a.truncate(sid, editId)
-                consume(a.chat(sid, text, atts.map { it.id }, currentModel.ifBlank { null }))
+                consume(a.chat(sid, text, atts.map { it.id }, currentModel.ifBlank { null }, webSearch, autoApprove))
             } catch (e: Exception) {
                 items += ChatItem.Notice(nextKey(), e.message ?: e.toString(), error = true)
             } finally {
@@ -260,6 +285,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun consume(events: kotlinx.coroutines.flow.Flow<JsonObject>) {
         streaming = true
         turnCompleted = false
+        val now = System.currentTimeMillis()
+        if (streamStartMs == 0L) streamStartMs = now
+        lastEventMs = now
+        if (phase.isEmpty()) phase = "sending"
         try {
             events.collect { handle(it) }
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -268,6 +297,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             items += ChatItem.Notice(nextKey(), "Connection lost: ${e.message}. Reopen the chat to resume.", true)
         } finally {
             streaming = false
+            phase = ""; streamStartMs = 0L; liveTokens = 0; liveTps = null
             runCatching { loadSessions() }
         }
         if (turnCompleted) syncFromServer()
@@ -285,9 +315,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun str(ev: JsonObject, k: String) = ev[k]?.jsonPrimitive?.contentOrNull.orEmpty()
 
     private fun handle(ev: JsonObject) {
+        lastEventMs = System.currentTimeMillis()
         when (str(ev, "type")) {
+            "phase" -> {
+                phase = str(ev, "phase"); phaseTool = str(ev, "name")
+                if (phase == "prompt") { liveTokens = 0; liveTps = null }
+            }
+            "progress" -> {
+                phase = str(ev, "phase")
+                liveTokens = ev["tokens"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: liveTokens
+                liveTps = ev["tps"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: liveTps
+            }
+            "stats" -> stats = runCatching { api!!.json.decodeFromJsonElement<SessionStats>(ev) }.getOrNull() ?: stats
             "delta", "reasoning" -> {
                 val isReasoning = str(ev, "type") == "reasoning"
+                if (phase == "prompt" || phase == "sending") phase = if (isReasoning) "thinking" else "writing"
                 val last = items.lastOrNull()
                 val cur = if (last is ChatItem.Assistant) last else ChatItem.Assistant(nextKey(), "", "").also { items += it }
                 val upd = if (isReasoning) cur.copy(reasoning = cur.reasoning + str(ev, "text"))
@@ -352,6 +394,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val last = items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
         startEdit(last)
         if (editingMessageId != null) send()
+    }
+
+    fun toggleWebSearch() {
+        webSearch = !webSearch
+        prefs.webSearch = webSearch
+        toast = if (webSearch) "Web search ON" else "Web search OFF"
+    }
+
+    fun updateAutoApprove(on: Boolean) {
+        autoApprove = on
+        prefs.autoApprove = on
     }
 
     fun setTheme(mode: String) {

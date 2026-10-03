@@ -25,6 +25,9 @@ _conn.executescript(
         id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, created REAL);
     """
 )
+# Separate table (not a new column) so an older server version sharing this database keeps working
+_conn.execute("CREATE TABLE IF NOT EXISTS session_stats(session_id TEXT PRIMARY KEY, stats TEXT)")
+_conn.commit()
 
 
 def _q(sql, args=(), one=False):
@@ -66,8 +69,19 @@ def update_session(sid, **fields):
 
 
 def delete_session(sid):
+    _q("DELETE FROM session_stats WHERE session_id=?", (sid,))
     _q("DELETE FROM messages WHERE session_id=?", (sid,))
     _q("DELETE FROM sessions WHERE id=?", (sid,))
+
+
+def set_stats(sid, stats: dict):
+    """Last token / speed / context numbers of a session."""
+    _q("INSERT OR REPLACE INTO session_stats VALUES(?,?)", (sid, json.dumps(stats)))
+
+
+def get_stats(sid):
+    r = _q("SELECT stats FROM session_stats WHERE session_id=?", (sid,), one=True)
+    return json.loads(r["stats"]) if r else None
 
 
 def truncate_session(sid, from_message_id):

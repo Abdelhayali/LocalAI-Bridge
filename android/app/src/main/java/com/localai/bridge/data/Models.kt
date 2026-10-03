@@ -44,6 +44,17 @@ data class MessageDto(
 data class PendingApproval(val id: String, val name: String, val args: JsonObject = JsonObject(emptyMap()))
 
 @Serializable
+data class SessionStats(
+    @SerialName("prompt_tokens") val promptTokens: Long? = null,
+    @SerialName("completion_tokens") val completionTokens: Long? = null,
+    val tps: Double? = null,
+    @SerialName("prompt_tps") val promptTps: Double? = null,
+    @SerialName("ctx_used") val ctxUsed: Long? = null,
+    @SerialName("ctx_size") val ctxSize: Long? = null,
+    val seconds: Double? = null,
+)
+
+@Serializable
 data class SessionDetail(
     val id: String,
     val title: String = "",
@@ -51,6 +62,7 @@ data class SessionDetail(
     val running: Boolean = false,
     val messages: List<MessageDto> = emptyList(),
     @SerialName("pending_approvals") val pendingApprovals: List<PendingApproval> = emptyList(),
+    val stats: SessionStats? = null,
 )
 
 @Serializable

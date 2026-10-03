@@ -34,6 +34,9 @@ Android app ──HTTPS──► Cloudflare tunnel ──► LocalAI Bridge serv
 | 🖥️ **Run code on the PC** | Python, PowerShell or cmd, by the AI or by you from the Terminal screen. Approval on the phone first |
 | 📁 **Files on PC** | Browse allowed folders, open/share files, upload from phone to PC, "Ask AI about this file" |
 | 🖼️ **Images** | Attach photos/images/PDFs/camera shots, screenshot your PC, charts the AI draws appear inline. Tap to zoom, share or save |
+| 🌐 **Web search** | Tap 🌐 in the chat: the AI can search the internet (DuckDuckGo, no API key) and read web pages |
+| 📊 **Live status & stats** | See what the PC is doing (reading, thinking, writing, running a tool) with tokens, speed and a timer. Each chat shows context used / available and tokens per second |
+| ⚡ **Auto-approve** | Optional: let the AI run code and write files without asking (Settings, with a warning) |
 | 🧠 **Memory** | The AI saves facts about you that carry across all chats. View, add or delete them in the app |
 | 🌗 **Themes** | Light, dark or follow the system |
 | 🔒 **Security** | 256-bit token, HTTPS tunnel, server only listens on localhost, approval for code and file writes |
@@ -89,7 +92,9 @@ No window? Use **`Start-Server-Console.bat`** instead. It does the same in a con
 
 ### Step 5: Pair the phone
 
-Open the app → **Scan QR code** → point the camera at the QR in the control panel. Done!
+Open the app and choose one:
+- **Scan QR code with camera**: point the camera at the QR in the control panel, or
+- **Load QR from image / screenshot**: pick a picture of the QR from your gallery (handy when you're not at the PC).
 
 (Or type the **Public URL** and the **Access token**: tick *Show* in the control panel and use *Copy*.)
 
@@ -102,6 +107,11 @@ Open the app → **Scan QR code** → point the camera at the QR in the control 
   When the AI wants to run code or write a file, the phone asks **Approve / Deny** first.
 - **☰ Menu:** your sessions, **Files on PC**, **Terminal**, **Memory**, **Settings**, and the 🌙 theme toggle.
 - **Under each message:** 📋 copy, ✏️ edit (your messages), 🔄 regenerate (last answer).
+- **🌐 button** (next to 📎): turns web search on or off.
+- **While it works:** the bar above the input shows the current step, tokens, speed (t/s) and elapsed time.
+  If the PC goes silent for 30 s you get a warning.
+- **Under the title:** `Context 1.8k / 131k (1%) · 46.7 t/s · read 297 t/s` for the current chat.
+- **Settings → Auto-approve everything:** skips the Approve / Deny step. ⚠️ Only use it with content you trust.
 
 > ⚠️ The free Cloudflare URL **changes every time the server restarts**, so re-scan the QR after a restart
 > (Settings → Disconnect / re-pair). For a permanent address, see *Named tunnel* below.
@@ -141,6 +151,7 @@ to `http://127.0.0.1:8765`. Put its token in `tunnel_token`, your hostname in `p
 | App says *"Server/tunnel offline"* | The server was restarted: re-pair with the new QR |
 | AI doesn't use tools | Use a function-calling model, and start llama.cpp with `--jinja` |
 | Startup error mentioning `config.json` | Fix the typo, or delete `server/config.json` (it is recreated) |
+| Context / speed numbers don't show | They come from llama.cpp. Other backends may not report the context size |
 | Charts don't appear | The AI must save the image to a file (`plt.savefig("chart.png")`), not `plt.show()` |
 
 ---
@@ -149,7 +160,9 @@ to `http://127.0.0.1:8765`. Put its token in `tunnel_token`, your hostname in `p
 
 - Every request needs the **256-bit access token**. 10 wrong attempts lock that IP out for 10 minutes.
 - The server listens on **127.0.0.1 only**. The internet reaches it only through the encrypted Cloudflare tunnel.
-- The pairing page (`/pair`) only works on the PC itself, never through the tunnel.
+- The pairing page (`/pair`) only works on the PC itself, never through the tunnel, and only when it's addressed
+  as `127.0.0.1`/`localhost`. That blocks "DNS rebinding" attacks from malicious websites.
+- Web pages fetched by the AI can't reach your PC or local network (localhost / LAN addresses are blocked).
 - The phone stores the URL and token **encrypted** (Android Keystore) and excludes them from backups.
 - Code execution and file writes requested by the AI need **your approval** on the phone.
 - ⚠️ **Whoever has the token controls your PC.** Keep the QR private, and press **New token** if it leaks.

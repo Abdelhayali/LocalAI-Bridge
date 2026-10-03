@@ -34,7 +34,25 @@ def client_ip(req: Request) -> str:
 def is_local_request(req: Request) -> bool:
     """True only for requests made on this PC itself (not arriving through the tunnel)."""
     tunneled = any(h in req.headers for h in ("cf-connecting-ip", "cf-ray", "x-forwarded-for"))
-    return not tunneled and req.client is not None and req.client.host in ("127.0.0.1", "::1")
+    host = (req.headers.get("host") or "").lower()
+    host_ok = host.startswith(("127.0.0.1:", "localhost:", "[::1]:")) or host in ("127.0.0.1", "localhost", "[::1]")
+    return not tunneled and host_ok and req.client is not None and req.client.host in ("127.0.0.1", "::1")
+
+
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+
+
+@app.middleware("http")
+async def host_guard(req: Request, call_next):
+    """Block DNS-rebinding: a request that did not come through Cloudflare must address us as localhost.
+    (A malicious web page could otherwise point its own domain at 127.0.0.1 and read /pair.)"""
+    tunneled = "cf-ray" in req.headers or "cf-connecting-ip" in req.headers
+    h = (req.headers.get("host") or "").lower()
+    host = h.split("]")[0] + "]" if h.startswith("[") else h.rsplit(":", 1)[0]
+    if not tunneled and host not in LOCAL_HOSTS:
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse("Forbidden host", status_code=403)
+    return await call_next(req)
 
 
 async def require_auth(req: Request):
@@ -77,6 +95,25 @@ async def pick_model(requested: str | None) -> str:
     if not models:
         raise RuntimeError("The LLM server has no models loaded.")
     return models[0]
+
+
+_ctx_cache = {"t": 0.0, "n": None}
+
+
+async def context_size() -> int | None:
+    """Model context window. llama.cpp exposes it at /props; other backends may not (None)."""
+    if time.time() - _ctx_cache["t"] < 60:
+        return _ctx_cache["n"]
+    n = None
+    try:
+        root = llm_api_base()[:-3]  # strip /v1
+        async with httpx.AsyncClient(timeout=4) as c:
+            d = (await c.get(root + "/props", headers=llm_headers())).json()
+        n = (d.get("default_generation_settings") or {}).get("n_ctx") or d.get("n_ctx")
+    except Exception:
+        pass
+    _ctx_cache.update(t=time.time(), n=n)
+    return n
 
 
 def image_data_uri(att: dict) -> str:
@@ -149,8 +186,10 @@ def build_llm_messages(session_id: str) -> list[dict]:
 class Run:
     """A chat turn running in the background; survives phone disconnects."""
 
-    def __init__(self, sid):
+    def __init__(self, sid, web=False, auto_approve=False):
         self.sid = sid
+        self.web = web
+        self.auto_approve = auto_approve
         self.queues: list[asyncio.Queue] = []
         self.history: list[dict] = []
         self.stopped = False
@@ -167,9 +206,13 @@ approvals: dict[str, dict] = {}  # call_id -> {"future", "session_id", "name", "
 
 
 async def stream_completion(client, payload, run: Run):
-    """Streams one completion; returns (content, reasoning, tool_calls)."""
+    """Streams one completion; returns (content, reasoning, tool_calls, stats)."""
     content, reasoning, calls = "", "", {}
+    usage, timings = {}, {}
+    n_tok, t_first, t_last_progress = 0, None, 0.0
+    t_start = time.time()
     url = llm_api_base() + "/chat/completions"
+    run.emit({"type": "phase", "phase": "prompt"})  # model is reading the conversation
     async with client.stream("POST", url, json=payload, headers=llm_headers()) as r:
         if r.status_code >= 400:
             body = (await r.aread()).decode(errors="replace")
@@ -186,9 +229,22 @@ async def stream_completion(client, payload, run: Run):
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
+            usage = chunk.get("usage") or usage
+            timings = chunk.get("timings") or timings
             if not chunk.get("choices"):
                 continue
             d = chunk["choices"][0].get("delta") or {}
+            if d.get("content") or d.get("reasoning_content") or d.get("reasoning") or d.get("tool_calls"):
+                n_tok += 1
+                now = time.time()
+                if t_first is None:
+                    t_first = now
+                if now - t_last_progress >= 1.0:  # live progress once per second
+                    t_last_progress = now
+                    phase = "tool_args" if d.get("tool_calls") else ("writing" if d.get("content") else "thinking")
+                    span = now - t_first
+                    run.emit({"type": "progress", "phase": phase, "tokens": n_tok,
+                              "tps": round(n_tok / span, 1) if span > 0.5 else None})
             rz = d.get("reasoning_content") or d.get("reasoning")
             if rz:
                 reasoning += rz
@@ -205,7 +261,16 @@ async def stream_completion(client, payload, run: Run):
     tool_calls = [{"id": c["id"] or f"call_{uuid.uuid4().hex[:12]}", "type": "function",
                    "function": {"name": c["name"], "arguments": c["args"] or "{}"}}
                   for _, c in sorted(calls.items())]
-    return content, reasoning, tool_calls
+    gen_time = (time.time() - t_first) if t_first else 0
+    stats = {
+        "prompt_tokens": usage.get("prompt_tokens") or timings.get("prompt_n"),
+        "completion_tokens": usage.get("completion_tokens") or timings.get("predicted_n") or n_tok,
+        "tps": round(timings["predicted_per_second"], 1) if timings.get("predicted_per_second")
+        else (round(n_tok / gen_time, 1) if gen_time > 0.5 else None),
+        "prompt_tps": round(timings["prompt_per_second"], 1) if timings.get("prompt_per_second") else None,
+        "seconds": round(time.time() - t_start, 1),
+    }
+    return content, reasoning, tool_calls, stats
 
 
 async def chat_turn(run: Run, model: str | None):
@@ -213,14 +278,20 @@ async def chat_turn(run: Run, model: str | None):
     try:
         model = await pick_model(model)
         use_tools = True
+        use_usage = True
         async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10)) as client:
             for _round in range(config["max_tool_rounds"]):
                 payload = {"model": model, "messages": build_llm_messages(sid), "stream": True}
+                if use_usage:
+                    payload["stream_options"] = {"include_usage": True}
                 if use_tools:
-                    payload["tools"] = tools.tool_schemas()
+                    payload["tools"] = tools.tool_schemas(web=run.web)
                 try:
-                    content, reasoning, tool_calls = await stream_completion(client, payload, run)
+                    content, reasoning, tool_calls, stats = await stream_completion(client, payload, run)
                 except httpx.HTTPStatusError as e:
+                    if use_usage and "stream_options" in str(e):
+                        use_usage = False
+                        continue
                     if use_tools and "tool" in str(e).lower():
                         use_tools = False
                         run.emit({"type": "notice", "text": "Model does not support tools; continuing without them."})
@@ -228,6 +299,11 @@ async def chat_turn(run: Run, model: str | None):
                     raise
                 db.add_message(sid, "assistant", content, reasoning=reasoning or None,
                                tool_calls=tool_calls or None)
+                ctx = await context_size()
+                used = (stats["prompt_tokens"] or 0) + (stats["completion_tokens"] or 0)
+                stats.update(ctx_used=used or None, ctx_size=ctx)
+                db.set_stats(sid, stats)
+                run.emit({"type": "stats", **stats})
                 if not tool_calls or run.stopped:
                     break
                 for tc in tool_calls:
@@ -237,10 +313,11 @@ async def chat_turn(run: Run, model: str | None):
                     except json.JSONDecodeError:
                         args = {}
                     run.emit({"type": "tool_call", "id": tc["id"], "name": name, "args": args})
-                    if name in tools.NEEDS_APPROVAL and config["require_tool_approval"]:
+                    if name in tools.NEEDS_APPROVAL and config["require_tool_approval"] and not run.auto_approve:
                         fut = asyncio.get_running_loop().create_future()
                         approvals[tc["id"]] = {"future": fut, "session_id": sid, "name": name, "args": args}
                         run.emit({"type": "approval_required", "id": tc["id"], "name": name, "args": args})
+                        run.emit({"type": "phase", "phase": "approval", "name": name})
                         try:
                             ok = await asyncio.wait_for(fut, 600)
                         except asyncio.TimeoutError:
@@ -250,8 +327,10 @@ async def chat_turn(run: Run, model: str | None):
                         if not ok:
                             result, atts = "The user denied this action.", []
                         else:
+                            run.emit({"type": "phase", "phase": "tool", "name": name})
                             result, atts = await asyncio.to_thread(tools.execute_tool, name, args)
                     else:
+                        run.emit({"type": "phase", "phase": "tool", "name": name})
                         result, atts = await asyncio.to_thread(tools.execute_tool, name, args)
                     db.add_message(sid, "tool", result, attachments=atts or None, tool_call_id=tc["id"], name=name)
                     run.emit({"type": "tool_result", "id": tc["id"], "name": name, "output": result,
@@ -288,7 +367,7 @@ def sse_response(run: Run, replay=False):
                 try:
                     ev = await asyncio.wait_for(q.get(), 15)
                 except asyncio.TimeoutError:
-                    yield ": ping\n\n"  # keeps Cloudflare from closing idle streams
+                    yield 'data: {"type": "ping"}\n\n'  # keeps Cloudflare open + tells the app we're alive
                     continue
                 if ev is None:
                     break
@@ -349,6 +428,8 @@ class ChatIn(BaseModel):
     content: str = ""
     attachments: list[str] = []
     model: str | None = None
+    web: bool = False            # give the model web_search / fetch_url
+    auto_approve: bool = False   # run code / write files without asking the phone
 
 
 class ApprovalIn(BaseModel):
@@ -357,7 +438,8 @@ class ApprovalIn(BaseModel):
 
 @app.get("/api/sessions", dependencies=[Auth])
 async def sessions_list():
-    return [dict(s, running=s["id"] in runs) for s in db.list_sessions()]
+    return [dict(s, running=s["id"] in runs, stats=db.get_stats(s["id"]))
+            for s in db.list_sessions()]
 
 
 @app.post("/api/sessions", dependencies=[Auth])
@@ -372,7 +454,8 @@ async def sessions_get(sid: str):
         raise HTTPException(404)
     pending = [{"id": k, "name": v["name"], "args": v["args"]}
                for k, v in approvals.items() if v["session_id"] == sid]
-    return {**s, "running": sid in runs, "messages": db.get_messages(sid), "pending_approvals": pending}
+    return {**s, "stats": db.get_stats(sid),
+            "running": sid in runs, "messages": db.get_messages(sid), "pending_approvals": pending}
 
 
 @app.patch("/api/sessions/{sid}", dependencies=[Auth])
@@ -405,7 +488,7 @@ async def chat(sid: str, body: ChatIn):
     model = body.model or s["model"] or None
     if body.model and body.model != s["model"]:
         db.update_session(sid, model=body.model)
-    run = Run(sid)
+    run = Run(sid, web=body.web, auto_approve=body.auto_approve)
     runs[sid] = run
     resp = sse_response(run)
     run.task = asyncio.create_task(chat_turn(run, model))

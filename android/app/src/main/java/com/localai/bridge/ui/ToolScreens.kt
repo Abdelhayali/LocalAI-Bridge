@@ -33,7 +33,10 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Switch
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -319,6 +322,17 @@ fun MemoryScreen(vm: MainViewModel, openDrawer: () -> Unit) {
 @Composable
 fun SettingsScreen(vm: MainViewModel, openDrawer: () -> Unit) {
     LaunchedEffect(Unit) { vm.refreshAll() }
+    var confirmAuto by remember { mutableStateOf(false) }
+    if (confirmAuto) AlertDialog(
+        onDismissRequest = { confirmAuto = false },
+        title = { Text("Turn on auto-approve?") },
+        text = {
+            Text("The AI will run code and write files on your PC without asking. A malicious web page, PDF or " +
+                "file the AI reads could trick it into running harmful commands. Only use this with content you trust.")
+        },
+        confirmButton = { TextButton(onClick = { vm.updateAutoApprove(true); confirmAuto = false }) { Text("Turn on") } },
+        dismissButton = { TextButton(onClick = { confirmAuto = false }) { Text("Cancel") } },
+    )
     val i = vm.info
     Scaffold(topBar = { Bar("Settings", openDrawer) }) { pad ->
         Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -332,6 +346,27 @@ fun SettingsScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                 Text("Code execution: ${if (i.codeExec) "enabled" else "disabled"} · approval ${if (i.requireApproval) "required" else "not required"}")
                 Text("Allowed folders:\n" + i.allowedRoots.joinToString("\n") { "  • $it" })
                 Text("Workspace: ${i.workspace}")
+            }
+            HorizontalDivider()
+            Text("Assistant", style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Web search")
+                    Text("Let the AI search the internet and read web pages (also the 🌐 button in chat).",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = vm.webSearch, onCheckedChange = { vm.toggleWebSearch() })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Auto-approve everything", color = if (vm.autoApprove) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurface)
+                    Text("Run code and write files on the PC without asking you.",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = vm.autoApprove, onCheckedChange = { on ->
+                    if (on) confirmAuto = true else vm.updateAutoApprove(false)
+                })
             }
             HorizontalDivider()
             Text("Appearance", style = MaterialTheme.typography.titleMedium)

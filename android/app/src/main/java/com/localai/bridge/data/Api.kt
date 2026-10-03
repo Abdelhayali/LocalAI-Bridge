@@ -100,9 +100,14 @@ class Api(private val baseUrl: String, private val token: String) {
     }
 
     // ---- streaming chat (Server-Sent Events)
-    fun chat(sessionId: String, content: String, attachments: List<String>, model: String?): Flow<JsonObject> {
+    fun chat(
+        sessionId: String, content: String, attachments: List<String>, model: String?,
+        web: Boolean = false, autoApprove: Boolean = false,
+    ): Flow<JsonObject> {
         val body = buildJsonObject {
             put("content", content)
+            put("web", web)
+            put("auto_approve", autoApprove)
             putJsonArray("attachments") { attachments.forEach { add(it) } }
             if (!model.isNullOrBlank()) put("model", model)
         }

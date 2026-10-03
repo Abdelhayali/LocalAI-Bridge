@@ -31,6 +31,14 @@ class Prefs(context: Context) {
         get() = prefs.getString("theme", "system") ?: "system"
         set(v) = prefs.edit().putString("theme", v).apply()
 
+    var webSearch: Boolean
+        get() = prefs.getBoolean("web_search", false)
+        set(v) = prefs.edit().putBoolean("web_search", v).apply()
+
+    var autoApprove: Boolean
+        get() = prefs.getBoolean("auto_approve", false)
+        set(v) = prefs.edit().putBoolean("auto_approve", v).apply()
+
     val isPaired get() = serverUrl.isNotBlank() && token.isNotBlank()
 
     fun clear() = prefs.edit().clear().apply()

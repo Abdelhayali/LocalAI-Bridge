@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -132,6 +134,8 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                                 Text(shortModel(vm.currentModel.ifBlank { "auto model" }), style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Icon(Icons.Default.ArrowDropDown, null, Modifier.size(16.dp))
+                                if (vm.autoApprove) Text("  AUTO-APPROVE", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error)
                             }
                             DropdownMenu(modelMenu, { modelMenu = false }) {
                                 val models = vm.info?.models.orEmpty()
@@ -156,6 +160,7 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                 }
             }
             if (vm.loadingSession) LinearProgressIndicator(Modifier.fillMaxWidth())
+            vm.stats?.let { Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) { StatsLine(it) } }
 
             Box(Modifier.weight(1f)) {
                 if (vm.items.isEmpty() && !vm.loadingSession) EmptyChat()
@@ -191,6 +196,9 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                 }
             }
 
+            // ---- live status while the PC is working
+            if (vm.streaming) LiveStatus(vm)
+
             // ---- editing banner
             if (vm.editingMessageId != null) {
                 Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
@@ -224,9 +232,14 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                             })
                     }
                 }
+                IconButton(onClick = { vm.toggleWebSearch() }) {
+                    Icon(Icons.Default.Public, if (vm.webSearch) "Web search on" else "Web search off",
+                        tint = if (vm.webSearch) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                }
                 OutlinedTextField(
                     value = vm.draft, onValueChange = { vm.draft = it },
-                    placeholder = { Text("Message your local AI…") },
+                    placeholder = { Text(if (vm.webSearch) "Message (web search on)…" else "Message your local AI…") },
                     modifier = Modifier.weight(1f).heightIn(max = 160.dp),
                     shape = RoundedCornerShape(24.dp),
                 )
@@ -244,6 +257,72 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
     }
 
     vm.approvals.firstOrNull()?.let { ApprovalDialog(it, vm) }
+}
+
+private fun kfmt(n: Long): String = when {
+    n >= 1_000_000 -> "%.1fM".format(n / 1e6)
+    n >= 10_000 -> "%.0fk".format(n / 1e3)
+    n >= 1_000 -> "%.1fk".format(n / 1e3)
+    else -> n.toString()
+}
+
+/** "Context 2.4k / 131k (2%) · 36.1 t/s" under the chat title. */
+@Composable
+private fun StatsLine(s: com.localai.bridge.data.SessionStats?) {
+    if (s == null) return
+    val used = s.ctxUsed
+    val size = s.ctxSize
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        val parts = buildList {
+            if (used != null) add(if (size != null) "Context ${kfmt(used)} / ${kfmt(size)} (${(used * 100 / size)}%)"
+                                else "Context ${kfmt(used)} tokens")
+            s.tps?.let { add("%.1f t/s".format(it)) }
+            s.promptTps?.let { add("read %.0f t/s".format(it)) }
+        }
+        Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+        if (used != null && size != null && size > 0) {
+            Spacer(Modifier.size(6.dp))
+            val frac = (used.toFloat() / size).coerceIn(0f, 1f)
+            LinearProgressIndicator(progress = { frac }, modifier = Modifier.size(width = 40.dp, height = 4.dp),
+                color = if (frac > 0.85f) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+/** Shows what the PC is doing right now, with elapsed time - so long tasks visibly keep progressing. */
+@Composable
+private fun LiveStatus(vm: MainViewModel) {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); kotlinx.coroutines.delay(500) } }
+    val elapsed = ((now - vm.streamStartMs).coerceAtLeast(0) / 1000).toInt()
+    val silent = ((now - vm.lastEventMs) / 1000).toInt()
+    val speed = vm.liveTps?.let { " · %.1f t/s".format(it) } ?: ""
+    val label = when (vm.phase) {
+        "sending" -> "Sending to your PC…"
+        "prompt" -> "Reading the conversation…"
+        "thinking" -> "Thinking… ${vm.liveTokens} tokens$speed"
+        "writing" -> "Writing… ${vm.liveTokens} tokens$speed"
+        "tool_args" -> "Preparing a tool call… ${vm.liveTokens} tokens$speed"
+        "tool" -> "Running ${vm.phaseTool.replace('_', ' ')}…"
+        "approval" -> "Waiting for your approval"
+        else -> "Working…"
+    }
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
+        Column {
+            LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f), maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+                Text("%d:%02d".format(elapsed / 60, elapsed % 60), style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (silent >= 30) Text(
+                "No signal from the PC for ${silent}s - it may be busy or the connection dropped.",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 6.dp))
+        }
+    }
 }
 
 /** llama.cpp reports models as full file paths; show just the file name. */
@@ -337,6 +416,8 @@ private fun toolSummary(name: String, args: JsonObject): String = when (name) {
     "save_memory" -> "Remember: ${argText(args, "content")}"
     "search_memory" -> "Recall: ${argText(args, "query")}"
     "take_screenshot" -> "Screenshot of PC"
+    "web_search" -> "Web search: ${argText(args, "query")}"
+    "fetch_url" -> "Read ${argText(args, "url")}"
     "send_file_to_user" -> "Send ${shortModel(argText(args, "path"))}"
     else -> name
 }
