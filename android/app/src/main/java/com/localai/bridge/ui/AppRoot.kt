@@ -21,7 +21,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Memory
@@ -142,7 +145,15 @@ fun MainShell(vm: MainViewModel) {
         ModalDrawerSheet {
             Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
                 Spacer(Modifier.height(16.dp))
-                Text("LocalAI Bridge", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("LocalAI Bridge", style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.padding(8.dp).weight(1f))
+                    val dark = when (vm.themeMode) { "dark" -> true; "light" -> false; else -> isSystemInDarkTheme() }
+                    IconButton(onClick = { vm.setTheme(if (dark) "light" else "dark") }) {
+                        Icon(if (dark) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            if (dark) "Light mode" else "Dark mode")
+                    }
+                }
                 Button(onClick = { vm.newChat(); scope.launch { drawer.close() } }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.Add, null); Spacer(Modifier.size(6.dp)); Text("New chat")
                 }

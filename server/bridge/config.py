@@ -21,8 +21,7 @@ def _defaults() -> dict:
     return {
         "host": "127.0.0.1",          # keep on localhost; cloudflared reaches it locally
         "port": 8765,
-        "llm_base_url": "http://localhost:11434/v1",  # Ollama. LM Studio: http://localhost:1234/v1, llama.cpp: http://localhost:8080/v1
-        "llm_api_key": "",
+        "llm_base_url": "http://127.0.0.1:8080",  # llama.cpp server (no API key). "/v1" is added automatically
         "default_model": "",
         "auth_token": secrets.token_urlsafe(32),
         "allowed_roots": [home, str(SERVER_DIR.parent / "workspace")],
@@ -43,7 +42,9 @@ class Config:
     def __init__(self):
         self.data = _defaults()
         if CONFIG_PATH.exists():
-            self.data.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
+            self.data.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig")))
+            if self.data.get("llm_base_url") == "http://localhost:11434/v1":  # old default -> llama.cpp
+                self.data["llm_base_url"] = "http://127.0.0.1:8080"
         self.save()
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         (DATA_DIR / "uploads").mkdir(exist_ok=True)
@@ -65,3 +66,9 @@ class Config:
 
 
 config = Config()
+
+
+def llm_api_base() -> str:
+    """OpenAI-compatible base URL; accepts both http://host:port and http://host:port/v1."""
+    u = config["llm_base_url"].strip().rstrip("/")
+    return u if u.endswith("/v1") else u + "/v1"

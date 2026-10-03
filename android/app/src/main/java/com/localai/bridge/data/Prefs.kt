@@ -27,6 +27,10 @@ class Prefs(context: Context) {
         get() = prefs.getString("last_session", "") ?: ""
         set(v) = prefs.edit().putString("last_session", v).apply()
 
+    var themeMode: String
+        get() = prefs.getString("theme", "system") ?: "system"
+        set(v) = prefs.edit().putString("theme", v).apply()
+
     val isPaired get() = serverUrl.isNotBlank() && token.isNotBlank()
 
     fun clear() = prefs.edit().clear().apply()

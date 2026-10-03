@@ -3,7 +3,7 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -96,6 +96,47 @@ def search_files(root: str, pattern: str) -> str:
     return "\n".join(hits) or "No matches."
 
 
+# ---------------- images / files shown in the chat ----------------
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def share_file(path: Path) -> dict:
+    """Copy a file into uploads and register it as an attachment the phone can display/download."""
+    import mimetypes
+    import shutil
+    from .config import DATA_DIR
+    dest = DATA_DIR / "uploads" / f"{uuid.uuid4().hex[:8]}_{path.name}"
+    shutil.copy2(path, dest)
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    kind = "image" if path.suffix.lower() in IMAGE_EXT else ("pdf" if path.suffix.lower() == ".pdf" else "file")
+    a = db.add_attachment(path.name, mime, kind, str(dest), None, dest.stat().st_size)
+    return {k: a[k] for k in ("id", "filename", "mime", "kind", "size")}
+
+
+def take_screenshot() -> dict:
+    """Capture all monitors of this PC and return it as an image attachment."""
+    from PIL import ImageGrab
+    from .config import DATA_DIR
+    img = ImageGrab.grab(all_screens=True).convert("RGB")
+    dest = DATA_DIR / "uploads" / f"screenshot_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
+    img.save(dest, "JPEG", quality=88)
+    a = db.add_attachment(dest.name, "image/jpeg", "image", str(dest), None, dest.stat().st_size)
+    return {k: a[k] for k in ("id", "filename", "mime", "kind", "size")}
+
+
+def _recent_images(root: Path, since: float, limit=6) -> list[Path]:
+    hits = []
+    for p in root.rglob("*"):
+        if ".runs" in p.parts or p.suffix.lower() not in IMAGE_EXT:
+            continue
+        try:
+            if p.stat().st_mtime >= since:
+                hits.append(p)
+        except OSError:
+            pass
+    return sorted(hits, key=lambda p: p.stat().st_mtime)[-limit:]
+
+
 # ---------------- code execution ----------------
 def run_code(language: str, code: str, timeout: int | None = None) -> dict:
     if not config["enable_code_exec"]:
@@ -149,6 +190,10 @@ def tool_schemas():
             {"root": {"type": "string"}, "pattern": {"type": "string"}}, ["root", "pattern"]),
         _fn("write_file", "Create or overwrite a text file on the user's PC.",
             {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
+        _fn("take_screenshot", "Take a screenshot of the user's PC screen and show it in the chat.", {}, []),
+        _fn("send_file_to_user", "Show an image (chart, figure, photo) or send any file from the PC to the "
+            "user's phone chat. Images are displayed inline.",
+            {"path": {"type": "string"}}, ["path"]),
         _fn("save_memory", "Save a durable fact or preference about the user for future sessions.",
             {"content": {"type": "string"}}, ["content"]),
         _fn("search_memory", "Search saved long-term memories.",
@@ -157,7 +202,9 @@ def tool_schemas():
     if config["enable_code_exec"]:
         s.insert(0, _fn("run_code",
                         f"Execute code on the user's Windows PC. Working directory: {config['workspace']}. "
-                        "Returns stdout, stderr and exit code. Use print() to show results.",
+                        "Returns stdout, stderr and exit code. Use print() to show results. "
+                        "Any image file the code saves (e.g. plt.savefig('chart.png')) is shown to the user "
+                        "automatically - never call plt.show().",
                         {"language": {"type": "string", "enum": ["python", "powershell", "cmd"]},
                          "code": {"type": "string"}}, ["language", "code"]))
     return s
@@ -166,12 +213,36 @@ def tool_schemas():
 NEEDS_APPROVAL = {"run_code", "write_file"}
 
 
-def execute_tool(name: str, args: dict) -> str:
-    """Run a tool synchronously; always returns a string for the LLM."""
+def execute_tool(name: str, args: dict) -> tuple[str, list[dict]]:
+    """Run a tool synchronously; returns (text for the LLM, attachments shown to the user)."""
     try:
         if name == "run_code":
+            start = time.time() - 1
             r = run_code(args.get("language", "python"), args.get("code", ""))
-            return json.dumps(r, ensure_ascii=False)
+            atts = [share_file(p) for p in _recent_images(Path(config["workspace"]), start)]
+            if atts:
+                r["images_displayed_to_user"] = [a["filename"] for a in atts]
+                r["note"] = "These images are shown to the user; you cannot see them, so don't describe their content."
+            return json.dumps(r, ensure_ascii=False), atts
+        if name == "take_screenshot":
+            a = take_screenshot()
+            return (f"Screenshot taken and displayed to the user ({a['filename']}). You cannot see its "
+                    "contents - do not describe it. The user can attach it to a message if you need to look."), [a]
+        if name == "send_file_to_user":
+            p = resolve_path(args.get("path", ""))
+            if not p.is_file():
+                raise ToolError(f"Not a file: {p}")
+            a = share_file(p)
+            return f"Sent {p.name} to the user (displayed in their chat).", [a]
+        return _execute_text_tool(name, args), []
+    except ToolError as e:
+        return f"Error: {e}", []
+    except Exception as e:  # report, don't crash the chat
+        return f"Error: {type(e).__name__}: {e}", []
+
+
+def _execute_text_tool(name: str, args: dict) -> str:
+    try:
         if name == "list_dir":
             r = list_dir(args.get("path", ""))
             lines = [("[DIR] " if e["is_dir"] else f"{e['size']:>10}  ") + e["name"] for e in r["entries"]]

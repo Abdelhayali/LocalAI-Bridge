@@ -94,16 +94,17 @@ private fun humanSize(b: Long): String = when {
     else -> "$b B"
 }
 
-private fun openLocal(ctx: Context, f: File) {
+fun openLocal(ctx: Context, f: File) {
     val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", f)
     val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "*/*"
     val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     ctx.startActivity(Intent.createChooser(view, f.name))
 }
 
-private fun shareLocal(ctx: Context, f: File) {
+fun shareLocal(ctx: Context, f: File) {
     val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", f)
-    val send = Intent(Intent.ACTION_SEND).setType("*/*").putExtra(Intent.EXTRA_STREAM, uri)
+    val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(f.extension.lowercase()) ?: "*/*"
+    val send = Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri)
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     ctx.startActivity(Intent.createChooser(send, f.name))
 }
@@ -331,6 +332,13 @@ fun SettingsScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                 Text("Code execution: ${if (i.codeExec) "enabled" else "disabled"} · approval ${if (i.requireApproval) "required" else "not required"}")
                 Text("Allowed folders:\n" + i.allowedRoots.joinToString("\n") { "  • $it" })
                 Text("Workspace: ${i.workspace}")
+            }
+            HorizontalDivider()
+            Text("Appearance", style = MaterialTheme.typography.titleMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("system" to "System", "light" to "Light", "dark" to "Dark").forEach { (k, label) ->
+                    FilterChip(selected = vm.themeMode == k, onClick = { vm.setTheme(k) }, label = { Text(label) })
+                }
             }
             HorizontalDivider()
             Text("Quick tunnel URLs change every time the server restarts. Re-scan the QR after a restart, " +

@@ -11,3 +11,4 @@ android/local.properties
 android/.idea/
 *.apk
 !release/*.apk
+android/.kotlin/

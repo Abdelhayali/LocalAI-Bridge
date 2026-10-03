@@ -19,6 +19,7 @@ import com.localai.bridge.data.SessionDto
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -28,11 +29,15 @@ enum class Screen { CHAT, FILES, TERMINAL, MEMORY, SETTINGS }
 sealed interface ChatItem {
     val key: String
 
-    data class User(override val key: String, val text: String, val attachments: List<AttachmentRef>) : ChatItem
+    data class User(
+        override val key: String, val text: String, val attachments: List<AttachmentRef>,
+        val messageId: Long? = null,   // server id; needed to edit the message
+    ) : ChatItem
     data class Assistant(override val key: String, val text: String, val reasoning: String) : ChatItem
     data class Tool(
         override val key: String, val name: String, val args: JsonObject,
         val output: String?, val status: String,   // running | awaiting | done
+        val attachments: List<AttachmentRef> = emptyList(),  // images/files the tool sent to the chat
     ) : ChatItem
     data class Notice(override val key: String, val text: String, val error: Boolean = false) : ChatItem
 }
@@ -60,6 +65,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val pendingAttachments = mutableStateListOf<AttachmentRef>()
     var uploading by mutableStateOf(false)
     var draft by mutableStateOf("")
+    var editingMessageId by mutableStateOf<Long?>(null)
+    var themeMode by mutableStateOf(prefs.themeMode)   // system | light | dark
+    private var turnCompleted = false
 
     private var streamJob: Job? = null
     private var keyCounter = 0
@@ -93,6 +101,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun unpair() {
         streamJob?.cancel()
         prefs.clear()
+        prefs.themeMode = themeMode
         api = null
         paired = false
         sessions.clear(); items.clear(); info = null; currentSessionId = null
@@ -112,6 +121,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) {
             connectionError = e.message ?: "Cannot reach server"
         }
+    }
+
+    /** Re-fetch the model list from the PC (the LLM server may have loaded a different model). */
+    fun refreshModels() = viewModelScope.launch {
+        try { info = api?.info() } catch (e: Exception) { toast = e.message }
     }
 
     suspend fun loadSessions() {
@@ -189,7 +203,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val toolIndex = mutableMapOf<String, Int>()
         for (m in msgs) {
             when (m.role) {
-                "user" -> out += ChatItem.User(nextKey(), m.content.orEmpty(), m.attachments)
+                "user" -> out += ChatItem.User(nextKey(), m.content.orEmpty(), m.attachments, m.id)
                 "assistant" -> {
                     if (!m.content.isNullOrBlank() || !m.reasoning.isNullOrBlank())
                         out += ChatItem.Assistant(nextKey(), m.content.orEmpty(), m.reasoning.orEmpty())
@@ -203,7 +217,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 "tool" -> {
                     val i = toolIndex[m.toolCallId]
-                    if (i != null) out[i] = (out[i] as ChatItem.Tool).copy(output = m.content, status = "done")
+                    if (i != null) out[i] = (out[i] as ChatItem.Tool).copy(
+                        output = m.content, status = "done", attachments = m.attachments)
                 }
             }
         }
@@ -216,8 +231,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val text = draft.trim()
         if ((text.isEmpty() && pendingAttachments.isEmpty()) || streaming || uploading) return
         val atts = pendingAttachments.toList()
+        val editId = editingMessageId
         draft = ""
         pendingAttachments.clear()
+        editingMessageId = null
+        if (editId != null) {
+            val idx = items.indexOfFirst { it is ChatItem.User && it.messageId == editId }
+            if (idx >= 0) while (items.size > idx) items.removeAt(items.size - 1)
+        }
         items += ChatItem.User(nextKey(), text, atts)
         streaming = true
         streamJob = viewModelScope.launch {
@@ -226,6 +247,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     currentSessionId = it
                     prefs.lastSession = it
                 }
+                if (editId != null) a.truncate(sid, editId)
                 consume(a.chat(sid, text, atts.map { it.id }, currentModel.ifBlank { null }))
             } catch (e: Exception) {
                 items += ChatItem.Notice(nextKey(), e.message ?: e.toString(), error = true)
@@ -237,6 +259,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun consume(events: kotlinx.coroutines.flow.Flow<JsonObject>) {
         streaming = true
+        turnCompleted = false
         try {
             events.collect { handle(it) }
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -246,6 +269,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } finally {
             streaming = false
             runCatching { loadSessions() }
+        }
+        if (turnCompleted) syncFromServer()
+    }
+
+    /** Reload the finished conversation so every message has its server id (needed for editing). */
+    private suspend fun syncFromServer() {
+        val sid = currentSessionId ?: return
+        runCatching {
+            val s = api!!.session(sid)
+            if (!s.running && !streaming) { items.clear(); items.addAll(toItems(s.messages)) }
         }
     }
 
@@ -271,9 +304,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "tool_result" -> {
                 val id = str(ev, "id")
                 approvals.removeAll { it.id == id }
-                updateTool(id) { it.copy(output = str(ev, "output"), status = "done") }
+                val atts = runCatching {
+                    api!!.json.decodeFromJsonElement<List<AttachmentRef>>(ev["attachments"]!!)
+                }.getOrDefault(emptyList())
+                updateTool(id) { it.copy(output = str(ev, "output"), status = "done", attachments = atts) }
             }
             "title" -> currentTitle = str(ev, "title")
+            "done" -> turnCompleted = true
             "notice" -> items += ChatItem.Notice(nextKey(), str(ev, "text"))
             "error" -> items += ChatItem.Notice(nextKey(), str(ev, "message"), error = true)
         }
@@ -293,6 +330,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun stop() = viewModelScope.launch {
         currentSessionId?.let { runCatching { api?.stop(it) } }
         approvals.clear()
+    }
+
+    // ---------------------------------------------------------------- edit / regenerate / theme
+    fun startEdit(item: ChatItem.User) {
+        if (streaming) return
+        if (item.messageId == null) { toast = "Wait a moment - message is still syncing"; return }
+        editingMessageId = item.messageId
+        draft = item.text
+        pendingAttachments.clear(); pendingAttachments.addAll(item.attachments)
+    }
+
+    fun cancelEdit() {
+        editingMessageId = null
+        draft = ""
+        pendingAttachments.clear()
+    }
+
+    /** Re-run the last user message to get a new answer. */
+    fun regenerate() {
+        val last = items.lastOrNull { it is ChatItem.User } as? ChatItem.User ?: return
+        startEdit(last)
+        if (editingMessageId != null) send()
+    }
+
+    fun setTheme(mode: String) {
+        themeMode = mode
+        prefs.themeMode = mode
+    }
+
+    /** Capture the PC screen and attach it to the next message. */
+    fun attachScreenshot() = viewModelScope.launch {
+        val a = api ?: return@launch
+        uploading = true
+        try { pendingAttachments += a.screenshot() } catch (e: Exception) { toast = "Screenshot failed: ${e.message}" }
+        uploading = false
     }
 
     // ---------------------------------------------------------------- attachments

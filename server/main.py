@@ -18,16 +18,21 @@ def show_qr(srv: BridgeServer, url: str):
     print(f"  Tunnel URL: {url}")
     print("  Scan this QR in the Android app (Pair -> Scan QR):")
     print(buf.getvalue())
-    print("  Or open http://127.0.0.1:8765/pair on this PC for a larger QR.")
+    print(f"  Or open http://127.0.0.1:{srv.port}/pair on this PC for a larger QR.")
     print("=" * 60 + "\n")
 
 
 if __name__ == "__main__":
     srv = BridgeServer()
     srv.on_url_cb = lambda url: show_qr(srv, url)
-    srv.start()
     try:
-        while True:
+        srv.start()
+    except RuntimeError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+    try:
+        while srv.running:
             time.sleep(1)
+        print("Server stopped unexpectedly:", srv.error or "")
     except KeyboardInterrupt:
         srv.stop()

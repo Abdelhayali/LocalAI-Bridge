@@ -90,6 +90,10 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun setSessionModel(id: String, model: String): SessionDto =
         send("PATCH", "/api/sessions/$id", buildJsonObject { put("model", model) })
     suspend fun deleteSession(id: String) { exec(req("/api/sessions/$id").delete().build()) }
+    suspend fun truncate(id: String, messageId: Long) {
+        send<JsonObject>("POST", "/api/sessions/$id/truncate", buildJsonObject { put("message_id", messageId) })
+    }
+    suspend fun screenshot(): AttachmentRef = send("POST", "/api/screenshot", JsonObject(emptyMap()))
     suspend fun stop(id: String) { send<JsonObject>("POST", "/api/sessions/$id/stop", JsonObject(emptyMap())) }
     suspend fun approve(callId: String, ok: Boolean) {
         send<JsonObject>("POST", "/api/approvals/$callId", buildJsonObject { put("approve", ok) })

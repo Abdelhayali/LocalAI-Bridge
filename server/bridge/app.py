@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import db, tools
-from .config import DATA_DIR, config
+from .config import DATA_DIR, config, llm_api_base
 
 app = FastAPI(title="LocalAI Bridge", docs_url=None, redoc_url=None, openapi_url=None)
 state = {"public_url": None}
@@ -57,13 +57,13 @@ Auth = Depends(require_auth)
 
 # ---------------------------------------------------------------- LLM helpers
 def llm_headers():
-    k = config["llm_api_key"]
+    k = config.data.get("llm_api_key", "")
     return {"Authorization": f"Bearer {k}"} if k else {}
 
 
 async def list_models() -> list[str]:
     async with httpx.AsyncClient(timeout=10) as c:
-        r = await c.get(config["llm_base_url"].rstrip("/") + "/models", headers=llm_headers())
+        r = await c.get(llm_api_base() + "/models", headers=llm_headers())
         r.raise_for_status()
         return [m["id"] for m in r.json().get("data", [])]
 
@@ -169,7 +169,7 @@ approvals: dict[str, dict] = {}  # call_id -> {"future", "session_id", "name", "
 async def stream_completion(client, payload, run: Run):
     """Streams one completion; returns (content, reasoning, tool_calls)."""
     content, reasoning, calls = "", "", {}
-    url = config["llm_base_url"].rstrip("/") + "/chat/completions"
+    url = llm_api_base() + "/chat/completions"
     async with client.stream("POST", url, json=payload, headers=llm_headers()) as r:
         if r.status_code >= 400:
             body = (await r.aread()).decode(errors="replace")
@@ -248,13 +248,14 @@ async def chat_turn(run: Run, model: str | None):
                         finally:
                             approvals.pop(tc["id"], None)
                         if not ok:
-                            result = "The user denied this action."
+                            result, atts = "The user denied this action.", []
                         else:
-                            result = await asyncio.to_thread(tools.execute_tool, name, args)
+                            result, atts = await asyncio.to_thread(tools.execute_tool, name, args)
                     else:
-                        result = await asyncio.to_thread(tools.execute_tool, name, args)
-                    db.add_message(sid, "tool", result, tool_call_id=tc["id"], name=name)
-                    run.emit({"type": "tool_result", "id": tc["id"], "name": name, "output": result})
+                        result, atts = await asyncio.to_thread(tools.execute_tool, name, args)
+                    db.add_message(sid, "tool", result, attachments=atts or None, tool_call_id=tc["id"], name=name)
+                    run.emit({"type": "tool_result", "id": tc["id"], "name": name, "output": result,
+                              "attachments": atts})
                     if run.stopped:
                         break
             else:
@@ -312,7 +313,7 @@ async def info():
         models, llm_ok = await list_models(), True
     except Exception as e:
         models, llm_ok = [], False
-    return {"llm_base_url": config["llm_base_url"], "llm_ok": llm_ok, "models": models,
+    return {"llm_base_url": llm_api_base(), "llm_ok": llm_ok, "models": models,
             "default_model": config["default_model"] or (models[0] if models else ""),
             "allowed_roots": config["allowed_roots"], "workspace": config["workspace"],
             "code_exec": config["enable_code_exec"], "require_approval": config["require_tool_approval"]}
@@ -417,6 +418,25 @@ async def chat_resume(sid: str):
     if sid not in runs:
         raise HTTPException(404, "Nothing running")
     return sse_response(runs[sid], replay=True)
+
+
+class TruncateIn(BaseModel):
+    message_id: int
+
+
+@app.post("/api/sessions/{sid}/truncate", dependencies=[Auth])
+async def sessions_truncate(sid: str, body: TruncateIn):
+    """Remove a message and everything after it - used to edit a message and re-run the chat."""
+    if sid in runs:
+        raise HTTPException(409, "A reply is still running in this session")
+    db.truncate_session(sid, body.message_id)
+    return {"ok": True}
+
+
+@app.post("/api/screenshot", dependencies=[Auth])
+async def screenshot():
+    """Capture the PC screen; returns an attachment the phone can show or send to the model."""
+    return await asyncio.to_thread(tools.take_screenshot)
 
 
 @app.post("/api/sessions/{sid}/stop", dependencies=[Auth])

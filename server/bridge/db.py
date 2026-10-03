@@ -70,6 +70,12 @@ def delete_session(sid):
     _q("DELETE FROM sessions WHERE id=?", (sid,))
 
 
+def truncate_session(sid, from_message_id):
+    """Delete a message and everything after it (used when the user edits a message)."""
+    _q("DELETE FROM messages WHERE session_id=? AND id>=?", (sid, from_message_id))
+    update_session(sid)
+
+
 # ---- messages ----
 def add_message(session_id, role, content="", reasoning=None, attachments=None,
                 tool_calls=None, tool_call_id=None, name=None):

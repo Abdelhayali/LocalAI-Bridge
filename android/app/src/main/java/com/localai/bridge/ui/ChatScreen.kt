@@ -68,6 +68,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Screenshot
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -121,8 +128,8 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                     Column {
                         Text(vm.currentTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Box {
-                            Row(Modifier.clickable { modelMenu = true }, verticalAlignment = Alignment.CenterVertically) {
-                                Text(vm.currentModel.ifBlank { "default model" }, style = MaterialTheme.typography.labelMedium,
+                            Row(Modifier.clickable { modelMenu = true; vm.refreshModels() }, verticalAlignment = Alignment.CenterVertically) {
+                                Text(shortModel(vm.currentModel.ifBlank { "auto model" }), style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Icon(Icons.Default.ArrowDropDown, null, Modifier.size(16.dp))
                             }
@@ -130,7 +137,7 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                                 val models = vm.info?.models.orEmpty()
                                 if (models.isEmpty()) DropdownMenuItem(text = { Text("No models (is the LLM running?)") }, onClick = { modelMenu = false })
                                 models.forEach { m ->
-                                    DropdownMenuItem(text = { Text(m) }, onClick = { vm.selectModel(m); modelMenu = false })
+                                    DropdownMenuItem(text = { Text(shortModel(m)) }, onClick = { vm.selectModel(m); modelMenu = false })
                                 }
                             }
                         }
@@ -156,9 +163,11 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxSize()) {
                     items(vm.items, key = { it.key }) { item ->
                         when (item) {
-                            is ChatItem.User -> UserBubble(item)
-                            is ChatItem.Assistant -> AssistantBubble(item)
-                            is ChatItem.Tool -> ToolCard(item)
+                            is ChatItem.User -> UserBubble(vm, item)
+                            is ChatItem.Assistant -> AssistantBubble(vm, item,
+                                isLast = item === vm.items.lastOrNull { it is ChatItem.Assistant } &&
+                                    vm.items.last() !is ChatItem.User)
+                            is ChatItem.Tool -> ToolCard(vm, item)
                             is ChatItem.Notice -> Text(item.text, style = MaterialTheme.typography.bodySmall,
                                 color = if (item.error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
                         }
@@ -182,6 +191,18 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                 }
             }
 
+            // ---- editing banner
+            if (vm.editingMessageId != null) {
+                Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Edit, null, Modifier.size(16.dp))
+                        Text("  Editing message - the chat continues from here", style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.weight(1f))
+                        IconButton(onClick = { vm.cancelEdit() }) { Icon(Icons.Default.Close, "Cancel edit") }
+                    }
+                }
+            }
+
             // ---- input bar
             Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(8.dp), verticalAlignment = Alignment.Bottom) {
                 Box {
@@ -193,6 +214,8 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                             onClick = { attachMenu = false; pickFiles.launch(arrayOf("application/pdf")) })
                         DropdownMenuItem(text = { Text("Any file") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.InsertDriveFile, null) },
                             onClick = { attachMenu = false; pickFiles.launch(arrayOf("*/*")) })
+                        DropdownMenuItem(text = { Text("Screenshot of PC") }, leadingIcon = { Icon(Icons.Default.Screenshot, null) },
+                            onClick = { attachMenu = false; vm.attachScreenshot() })
                         DropdownMenuItem(text = { Text("Camera") }, leadingIcon = { Icon(Icons.Default.CameraAlt, null) },
                             onClick = {
                                 attachMenu = false
@@ -223,6 +246,9 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
     vm.approvals.firstOrNull()?.let { ApprovalDialog(it, vm) }
 }
 
+/** llama.cpp reports models as full file paths; show just the file name. */
+private fun shortModel(m: String) = m.substringAfterLast('\\').substringAfterLast('/')
+
 @Composable
 private fun EmptyChat() {
     Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center,
@@ -242,25 +268,40 @@ fun kindIcon(kind: String) = when (kind) {
 }
 
 @Composable
-private fun UserBubble(item: ChatItem.User) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(16.dp, 4.dp, 16.dp, 16.dp),
-            modifier = Modifier.widthIn(max = 320.dp)) {
-            Column(Modifier.padding(12.dp)) {
-                item.attachments.forEach { a ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(kindIcon(a.kind), null, Modifier.size(16.dp))
-                        Text(" " + a.filename, style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-                if (item.text.isNotBlank()) Text(item.text)
+private fun MessageActions(content: @Composable () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) { content() }
+}
+
+@Composable
+private fun SmallAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.size(34.dp)) {
+        Icon(icon, label, Modifier.size(17.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun UserBubble(vm: MainViewModel, item: ChatItem.User) {
+    val clip = LocalClipboardManager.current
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        AttachmentsView(vm, item.attachments, alignEnd = true)
+        if (item.text.isNotBlank()) {
+            Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(16.dp, 4.dp, 16.dp, 16.dp),
+                modifier = Modifier.widthIn(max = 320.dp).padding(top = 4.dp)) {
+                SelectionContainer { Text(item.text, Modifier.padding(12.dp)) }
             }
+        }
+        MessageActions {
+            SmallAction(Icons.Default.ContentCopy, "Copy") {
+                clip.setText(AnnotatedString(item.text)); vm.toast = "Copied"
+            }
+            if (!vm.streaming) SmallAction(Icons.Default.Edit, "Edit") { vm.startEdit(item) }
         }
     }
 }
 
 @Composable
-private fun AssistantBubble(item: ChatItem.Assistant) {
+private fun AssistantBubble(vm: MainViewModel, item: ChatItem.Assistant, isLast: Boolean) {
+    val clip = LocalClipboardManager.current
     val (thinkInline, visible) = splitThink(item.text)
     val reasoning = (item.reasoning + thinkInline).trim()
     var showReasoning by remember { mutableStateOf(false) }
@@ -272,7 +313,16 @@ private fun AssistantBubble(item: ChatItem.Assistant) {
             if (showReasoning) Text(reasoning, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 6.dp))
         }
-        if (visible.isNotBlank()) MarkdownText(visible.trim())
+        if (visible.isNotBlank()) {
+            MarkdownText(visible.trim())
+            val streamingThis = vm.streaming && isLast
+            if (!streamingThis) MessageActions {
+                SmallAction(Icons.Default.ContentCopy, "Copy") {
+                    clip.setText(AnnotatedString(visible.trim())); vm.toast = "Copied"
+                }
+                if (isLast && !vm.streaming) SmallAction(Icons.Default.Refresh, "Regenerate") { vm.regenerate() }
+            }
+        }
     }
 }
 
@@ -286,6 +336,8 @@ private fun toolSummary(name: String, args: JsonObject): String = when (name) {
     "search_files" -> "Search ${argText(args, "pattern")} in ${argText(args, "root")}"
     "save_memory" -> "Remember: ${argText(args, "content")}"
     "search_memory" -> "Recall: ${argText(args, "query")}"
+    "take_screenshot" -> "Screenshot of PC"
+    "send_file_to_user" -> "Send ${shortModel(argText(args, "path"))}"
     else -> name
 }
 
@@ -300,7 +352,7 @@ private fun prettyOutput(raw: String): String = runCatching {
 }.getOrDefault(raw)
 
 @Composable
-private fun ToolCard(item: ChatItem.Tool) {
+private fun ToolCard(vm: MainViewModel, item: ChatItem.Tool) {
     var open by remember { mutableStateOf(false) }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
         modifier = Modifier.fillMaxWidth().clickable { open = !open }.animateContentSize()) {
@@ -314,6 +366,10 @@ private fun ToolCard(item: ChatItem.Tool) {
                     "awaiting" -> Text("needs approval", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
                     else -> Text(if (open) "hide" else "details", style = MaterialTheme.typography.labelSmall)
                 }
+            }
+            if (item.attachments.isNotEmpty()) {
+                Spacer(Modifier.size(6.dp))
+                AttachmentsView(vm, item.attachments)
             }
             if (open) {
                 val code = argText(item.args, "code").ifBlank { argText(item.args, "content") }
