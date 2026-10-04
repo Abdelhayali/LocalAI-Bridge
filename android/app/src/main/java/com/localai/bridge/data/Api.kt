@@ -99,6 +99,12 @@ class Api(private val baseUrl: String, private val token: String) {
         send<JsonObject>("POST", "/api/approvals/$callId", buildJsonObject { put("approve", ok) })
     }
 
+    // ---- raw helpers (used by feature extensions such as the beta agent API)
+    suspend fun rawGet(path: String, query: Map<String, String> = emptyMap()): String = exec(req(path, query).get().build())
+    suspend fun rawSend(method: String, path: String, body: JsonObject?): String =
+        exec(req(path).method(method, body?.toString()?.toRequestBody(jsonType)).build())
+    fun sseGet(path: String, query: Map<String, String> = emptyMap()): Flow<JsonObject> = sse(req(path, query).get().build())
+
     // ---- streaming chat (Server-Sent Events)
     fun chat(
         sessionId: String, content: String, attachments: List<String>, model: String?,

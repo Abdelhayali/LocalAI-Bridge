@@ -130,6 +130,7 @@ data class TasksDto(
     val runs: List<TaskRun> = emptyList(),
     val processes: List<TaskProc> = emptyList(),
     @SerialName("llm_busy") val llmBusy: Boolean? = null,
+    val agents: List<BusyAgent> = emptyList(),   // BETA: OpenCode sessions that are working
 )
 
 @Serializable

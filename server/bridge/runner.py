@@ -100,6 +100,8 @@ class BridgeServer:
             self.log(f"Tunnel failed: {e}")
 
     def stop(self):
+        from .agent import oc
+        oc.stop()
         if self.tunnel:
             self.tunnel.stop()
         state["public_url"] = None

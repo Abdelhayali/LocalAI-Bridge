@@ -100,6 +100,23 @@ fun TasksScreen(vm: MainViewModel, openDrawer: () -> Unit) {
             if (t.runs.isEmpty()) Text("No chat is generating.", style = MaterialTheme.typography.bodySmall)
             t.runs.forEach { r -> RunCard(vm, r) }
 
+            // ---- BETA: coding agents
+            if (t.agents.isNotEmpty()) {
+                Text("Code agents (${t.agents.size})", style = MaterialTheme.typography.titleMedium)
+                t.agents.forEach { a ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(a.title, style = MaterialTheme.typography.titleSmall)
+                                Text(a.directory, style = MaterialTheme.typography.bodySmall, maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis)
+                            }
+                            OutlinedButton(onClick = { vm.stopAgent(a.id) }) { Text("Stop") }
+                        }
+                    }
+                }
+            }
+
             // ---- code processes
             Text("Code running on the PC (${t.processes.size})", style = MaterialTheme.typography.titleMedium)
             if (t.processes.isEmpty()) Text("No code is running.", style = MaterialTheme.typography.bodySmall)

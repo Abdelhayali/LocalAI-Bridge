@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.localai.bridge.data.Api
+import com.localai.bridge.data.agentAbort
 import com.localai.bridge.data.AttachmentRef
 import com.localai.bridge.data.MessageDto
 import com.localai.bridge.data.PairPayload
@@ -25,7 +26,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-enum class Screen { CHAT, FILES, TERMINAL, MEMORY, SETTINGS, TASKS }
+enum class Screen { CHAT, FILES, TERMINAL, MEMORY, SETTINGS, TASKS, AGENT }
 
 sealed interface ChatItem {
     val key: String
@@ -346,8 +347,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         get() {
             val t = tasks ?: return 0
             val runs = t.runs.count { !(streaming && it.sessionId == currentSessionId) }
-            val orphan = if (t.llmBusy == true && t.runs.isEmpty()) 1 else 0
-            return runs + t.processes.count { it.session == null || it.session != currentSessionId } + orphan
+            val orphan = if (t.llmBusy == true && t.runs.isEmpty() && t.agents.isEmpty()) 1 else 0
+            return runs + t.processes.count { it.session == null || it.session != currentSessionId } + orphan +
+                (if (screen == Screen.AGENT) 0 else t.agents.size)
         }
 
     fun refreshTasks() = viewModelScope.launch {
@@ -378,6 +380,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun stopTask(sid: String) = viewModelScope.launch {
         try { api?.stopTask(sid); toast = "Stopping…" } catch (e: Exception) { toast = e.message }
+        kotlinx.coroutines.delay(800); refreshTasks()
+    }
+
+    fun stopAgent(id: String) = viewModelScope.launch {
+        try { api?.agentAbort(id); toast = "Stopping the agent…" }
+        catch (e: Exception) { toast = e.message }
         kotlinx.coroutines.delay(800); refreshTasks()
     }
 

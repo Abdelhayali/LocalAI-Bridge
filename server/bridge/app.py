@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from . import db, tools
 from .config import DATA_DIR, config, llm_api_base
 
-app = FastAPI(title="LocalAI Bridge", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="LocalAI Bridge (beta)", docs_url=None, redoc_url=None, openapi_url=None)
 state = {"public_url": None}
 MAX_UPLOAD = 50 * 1024 * 1024
 
@@ -512,7 +512,7 @@ def sse_response(run: Run, replay=False):
 # ---------------------------------------------------------------- routes: misc
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "name": "LocalAI Bridge"}
+    return {"ok": True, "name": "LocalAI Bridge", "beta": True}
 
 
 @app.get("/api/info", dependencies=[Auth])
@@ -729,7 +729,8 @@ async def tasks_list():
         out.append({"session_id": sid, "title": s["title"] if s else "?", "phase": r.phase, "tool": r.tool,
                     "tokens": r.tokens, "tps": r.tps, "elapsed": round(now - r.started),
                     "waiting_approval": any(v["session_id"] == sid for v in approvals.values())})
-    return {"runs": out, "processes": tools.list_procs(), "llm_busy": await llm_busy()}
+    return {"runs": out, "processes": tools.list_procs(), "llm_busy": await llm_busy(),
+            "agents": await agent.busy_sessions()}
 
 
 def _hard_stop(sid: str):
@@ -762,8 +763,9 @@ async def tasks_kill_all():
     for sid in list(runs):
         _hard_stop(sid)
     n_procs = tools.kill_procs()
+    n_agents = await agent.abort_all()
     llm = await llm_abort()  # also stops generations nobody is waiting for (orphans)
-    return {"runs": n_runs, "processes": n_procs, "llm_cancelled": llm}
+    return {"runs": n_runs, "processes": n_procs, "agents": n_agents, "llm_cancelled": llm}
 
 
 @app.post("/api/approvals/{call_id}", dependencies=[Auth])
@@ -889,6 +891,12 @@ async def memory_list():
 @app.post("/api/memory", dependencies=[Auth])
 async def memory_add(body: MemoryIn):
     return {"id": db.add_memory(body.content.strip())}
+
+
+# ---------------------------------------------------------------- BETA: OpenCode coding agent
+from . import agent  # noqa: E402
+
+app.include_router(agent.router, dependencies=[Auth])
 
 
 @app.delete("/api/memory/{mid}", dependencies=[Auth])

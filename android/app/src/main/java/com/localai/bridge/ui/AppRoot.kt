@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -183,6 +184,8 @@ fun MainShell(vm: MainViewModel) {
                     label = { Text("Running tasks" + if (vm.backgroundTaskCount > 0) "  (${vm.backgroundTaskCount})" else "") },
                     icon = { Icon(Icons.Default.Memory, null) },
                     selected = vm.screen == Screen.TASKS, onClick = { go(Screen.TASKS) })
+                NavigationDrawerItem(label = { Text("Code agent (beta)") }, icon = { Icon(Icons.Default.Code, null) },
+                    selected = vm.screen == Screen.AGENT, onClick = { go(Screen.AGENT) })
                 NavigationDrawerItem(label = { Text("Files on PC") }, icon = { Icon(Icons.Default.Folder, null) },
                     selected = vm.screen == Screen.FILES, onClick = { go(Screen.FILES) })
                 NavigationDrawerItem(label = { Text("Terminal") }, icon = { Icon(Icons.Default.Terminal, null) },
@@ -222,6 +225,7 @@ fun MainShell(vm: MainViewModel) {
             Screen.MEMORY -> MemoryScreen(vm, openDrawer)
             Screen.SETTINGS -> SettingsScreen(vm, openDrawer)
             Screen.TASKS -> TasksScreen(vm, openDrawer)
+            Screen.AGENT -> AgentScreen(vm, openDrawer)
         }
     }
 
