@@ -698,6 +698,25 @@ async def llm_busy() -> bool | None:
     return None
 
 
+async def llm_abort() -> int | None:
+    """Ask the LLM server to cancel everything it is generating (EXL3 serve_openai /v1/abort).
+    Returns how many generations were cancelled, or None if the server has no abort endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.post(llm_api_base() + "/abort", headers=llm_headers())
+        return r.json().get("cancelled", 0) if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+@app.post("/api/llm/abort", dependencies=[Auth])
+async def llm_abort_endpoint():
+    n = await llm_abort()
+    if n is None:
+        raise HTTPException(501, "This LLM server can't cancel generations (no /v1/abort endpoint)")
+    return {"cancelled": n}
+
+
 @app.get("/api/tasks", dependencies=[Auth])
 async def tasks_list():
     now = time.time()
@@ -740,7 +759,8 @@ async def tasks_kill_all():
     for sid in list(runs):
         _hard_stop(sid)
     n_procs = tools.kill_procs()
-    return {"runs": n_runs, "processes": n_procs}
+    llm = await llm_abort()  # also stops generations nobody is waiting for (orphans)
+    return {"runs": n_runs, "processes": n_procs, "llm_cancelled": llm}
 
 
 @app.post("/api/approvals/{call_id}", dependencies=[Auth])

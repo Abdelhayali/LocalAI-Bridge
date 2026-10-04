@@ -190,6 +190,7 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun tasks(): TasksDto = get("/api/tasks")
     suspend fun stopTask(sessionId: String) { send<JsonObject>("POST", "/api/tasks/$sessionId/stop", JsonObject(emptyMap())) }
     suspend fun killProcess(pid: Long) { send<JsonObject>("POST", "/api/processes/$pid/kill", JsonObject(emptyMap())) }
+    suspend fun abortLlm(): JsonObject = send("POST", "/api/llm/abort", JsonObject(emptyMap()))
     suspend fun killAll(): JsonObject = send("POST", "/api/tasks/kill_all", JsonObject(emptyMap()))
 
     // ---- exec & memory

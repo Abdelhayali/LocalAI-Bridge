@@ -86,10 +86,12 @@ fun TasksScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                 else MaterialTheme.colorScheme.surfaceContainerHigh)) {
                 Column(Modifier.fillMaxWidth().padding(12.dp)) {
                     Text("LLM server: $llm", style = MaterialTheme.typography.titleSmall)
-                    if (t.llmBusy == true && t.runs.isEmpty()) Text(
-                        "The model is generating, but no chat is waiting for it. An earlier request was cut off and " +
-                            "the LLM server is finishing it anyway. New messages wait until it ends.",
-                        style = MaterialTheme.typography.bodySmall)
+                    if (t.llmBusy == true && t.runs.isEmpty()) {
+                        Text("The model is generating, but no chat is waiting for it. An earlier request was cut off " +
+                            "and the LLM server is finishing it anyway. New messages wait until it ends.",
+                            style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(onClick = { vm.abortLlm() }, modifier = Modifier.padding(top = 6.dp)) { Text("Stop it") }
+                    }
                 }
             }
 

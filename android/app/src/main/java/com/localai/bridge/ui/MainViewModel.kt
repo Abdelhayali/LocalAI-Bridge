@@ -371,6 +371,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         kotlinx.coroutines.delay(500); refreshTasks()
     }
 
+    fun abortLlm() = viewModelScope.launch {
+        try { val r = api?.abortLlm(); toast = "LLM stopped (${r?.get("cancelled") ?: 0} generation(s) cancelled)" }
+        catch (e: Exception) { toast = e.message }
+        kotlinx.coroutines.delay(800); refreshTasks()
+    }
+
     fun killAll() = viewModelScope.launch {
         try {
             val r = api?.killAll()
