@@ -273,6 +273,8 @@ async def compress_turn(run, model: str | None):
         run.emit({"type": "compressed", **res} if res else
                  {"type": "notice", "text": "Nothing to compress yet - the conversation is still short."})
         run.emit({"type": "done"})
+    except asyncio.CancelledError:
+        run.emit({"type": "error", "message": "Compression stopped."})
     except Exception as e:
         run.emit({"type": "error", "message": f"Compression failed: {type(e).__name__}: {e}"})
     finally:
@@ -294,8 +296,20 @@ class Run:
         self.history: list[dict] = []
         self.stopped = False
         self.task: asyncio.Task | None = None
+        # live state for the "Running tasks" screen
+        self.started = time.time()
+        self.phase, self.tool, self.tokens, self.tps = "starting", "", 0, None
 
     def emit(self, ev: dict):
+        t = ev.get("type")
+        if t == "phase":
+            self.phase, self.tool = ev.get("phase", ""), ev.get("name", "")
+        elif t == "progress":
+            self.phase = ev.get("phase", self.phase)
+            self.tokens = ev.get("tokens") or self.tokens
+            self.tps = ev.get("tps") or self.tps
+        elif t == "approval_required":
+            self.phase, self.tool = "approval", ev.get("name", "")
         self.history.append(ev)
         for q in self.queues:
             q.put_nowait(ev)
@@ -375,6 +389,7 @@ async def stream_completion(client, payload, run: Run):
 
 async def chat_turn(run: Run, model: str | None):
     sid = run.sid
+    tools.current_session.set(sid)
     try:
         model = await pick_model(model)
         use_tools = True
@@ -394,6 +409,8 @@ async def chat_turn(run: Run, model: str | None):
                 payload = {"model": model, "messages": build_llm_messages(sid), "stream": True}
                 if use_usage:
                     payload["stream_options"] = {"include_usage": True}
+                if config.data.get("max_tokens"):
+                    payload["max_tokens"] = int(config["max_tokens"])
                 if use_tools:
                     payload["tools"] = tools.tool_schemas(web=run.web)
                 try:
@@ -456,6 +473,8 @@ async def chat_turn(run: Run, model: str | None):
             db.update_session(sid, title=title)
             run.emit({"type": "title", "title": title})
         run.emit({"type": "done"})
+    except asyncio.CancelledError:
+        run.emit({"type": "error", "message": "Stopped from the Running tasks screen."})
     except Exception as e:
         run.emit({"type": "error", "message": f"{type(e).__name__}: {e}"})
     finally:
@@ -650,12 +669,78 @@ async def screenshot():
 
 @app.post("/api/sessions/{sid}/stop", dependencies=[Auth])
 async def chat_stop(sid: str):
+    tools.kill_procs(session=sid)
     if sid in runs:
         runs[sid].stopped = True
         for k, v in list(approvals.items()):
             if v["session_id"] == sid and not v["future"].done():
                 v["future"].set_result(False)
     return {"ok": True}
+
+
+async def llm_busy() -> bool | None:
+    """Is the LLM server generating right now (possibly for something we don't track)? None = unknown."""
+    base = llm_api_base()
+    root = base[:-3]
+    async with httpx.AsyncClient(timeout=3) as c:
+        try:
+            r = await c.get(root + "/slots", headers=llm_headers())  # llama.cpp
+            if r.status_code == 200 and isinstance(r.json(), list):
+                return any(s.get("is_processing") for s in r.json())
+        except Exception:
+            pass
+        try:
+            d = (await c.get(root + "/health", headers=llm_headers())).json()  # EXL3 server and others
+            if isinstance(d, dict) and "busy" in d:
+                return bool(d["busy"])
+        except Exception:
+            pass
+    return None
+
+
+@app.get("/api/tasks", dependencies=[Auth])
+async def tasks_list():
+    now = time.time()
+    out = []
+    for sid, r in list(runs.items()):
+        s = db.get_session(sid)
+        out.append({"session_id": sid, "title": s["title"] if s else "?", "phase": r.phase, "tool": r.tool,
+                    "tokens": r.tokens, "tps": r.tps, "elapsed": round(now - r.started),
+                    "waiting_approval": any(v["session_id"] == sid for v in approvals.values())})
+    return {"runs": out, "processes": tools.list_procs(), "llm_busy": await llm_busy()}
+
+
+def _hard_stop(sid: str):
+    r = runs.get(sid)
+    tools.kill_procs(session=sid)
+    for v in list(approvals.values()):
+        if v["session_id"] == sid and not v["future"].done():
+            v["future"].set_result(False)
+    if r:
+        r.stopped = True
+        if r.task and not r.task.done():
+            r.task.cancel()  # closes the LLM stream, which makes the LLM server stop generating
+
+
+@app.post("/api/tasks/{sid}/stop", dependencies=[Auth])
+async def task_stop(sid: str):
+    _hard_stop(sid)
+    return {"ok": True}
+
+
+@app.post("/api/processes/{pid}/kill", dependencies=[Auth])
+async def process_kill(pid: int):
+    return {"killed": tools.kill_procs(pid=pid)}
+
+
+@app.post("/api/tasks/kill_all", dependencies=[Auth])
+async def tasks_kill_all():
+    """Emergency stop: every running chat, every code process, every pending approval."""
+    n_runs = len(runs)
+    for sid in list(runs):
+        _hard_stop(sid)
+    n_procs = tools.kill_procs()
+    return {"runs": n_runs, "processes": n_procs}
 
 
 @app.post("/api/approvals/{call_id}", dependencies=[Auth])

@@ -25,7 +25,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-enum class Screen { CHAT, FILES, TERMINAL, MEMORY, SETTINGS }
+enum class Screen { CHAT, FILES, TERMINAL, MEMORY, SETTINGS, TASKS }
 
 sealed interface ChatItem {
     val key: String
@@ -74,6 +74,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var compressAt by mutableStateOf(prefs.compressAt)       // percent of the context
     private var turnEnded = false                            // got "done" or "error" (vs. connection dropped)
     private var reconnectJob: Job? = null
+
+    // what the PC is doing (Running tasks screen + indicator); polled while the app is open
+    var tasks by mutableStateOf<com.localai.bridge.data.TasksDto?>(null)
+    private var tasksJob: Job? = null
     private var turnCompleted = false
 
     // live status of a running reply (shown above the input while streaming)
@@ -105,6 +109,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             prefs.token = token.trim()
             api = test
             paired = true
+            startTaskPolling()
             refreshAll()
             null
         } catch (e: Exception) {
@@ -331,8 +336,52 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Number of things running on the PC that the current chat screen is not already showing. */
+    val backgroundTaskCount: Int
+        get() {
+            val t = tasks ?: return 0
+            val runs = t.runs.count { !(streaming && it.sessionId == currentSessionId) }
+            val orphan = if (t.llmBusy == true && t.runs.isEmpty()) 1 else 0
+            return runs + t.processes.count { it.session == null || it.session != currentSessionId } + orphan
+        }
+
+    fun refreshTasks() = viewModelScope.launch {
+        try { tasks = api?.tasks() } catch (_: Exception) { }
+    }
+
+    private fun startTaskPolling() {
+        tasksJob?.cancel()
+        tasksJob = viewModelScope.launch {
+            while (true) {
+                if (screen != Screen.TASKS) runCatching { tasks = api?.tasks() }  // Tasks screen refreshes itself
+                kotlinx.coroutines.delay(5_000)
+            }
+        }
+    }
+
+    fun onAppBackground() { tasksJob?.cancel() }
+
+    fun stopTask(sid: String) = viewModelScope.launch {
+        try { api?.stopTask(sid); toast = "Stopping…" } catch (e: Exception) { toast = e.message }
+        kotlinx.coroutines.delay(800); refreshTasks()
+    }
+
+    fun killProcess(pid: Long) = viewModelScope.launch {
+        try { api?.killProcess(pid); toast = "Process killed" } catch (e: Exception) { toast = e.message }
+        kotlinx.coroutines.delay(500); refreshTasks()
+    }
+
+    fun killAll() = viewModelScope.launch {
+        try {
+            val r = api?.killAll()
+            toast = "Stopped ${r?.get("runs") ?: 0} chat(s), killed ${r?.get("processes") ?: 0} process(es)"
+        } catch (e: Exception) { toast = e.message }
+        kotlinx.coroutines.delay(800); refreshTasks()
+    }
+
     /** Called when the app comes back to the foreground. */
     fun onAppForeground() {
+        if (paired) startTaskPolling()
         if (!paired || streaming || currentSessionId == null) return
         viewModelScope.launch { reattach() }
     }

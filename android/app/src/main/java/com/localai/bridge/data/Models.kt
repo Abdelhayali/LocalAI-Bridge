@@ -105,4 +105,32 @@ data class ExecResult(
 data class MemoryDto(val id: Long, val content: String, val created: Double = 0.0)
 
 @Serializable
+data class TaskRun(
+    @SerialName("session_id") val sessionId: String,
+    val title: String = "",
+    val phase: String = "",
+    val tool: String = "",
+    val tokens: Long = 0,
+    val tps: Double? = null,
+    val elapsed: Long = 0,
+    @SerialName("waiting_approval") val waitingApproval: Boolean = false,
+)
+
+@Serializable
+data class TaskProc(
+    val pid: Long,
+    val language: String = "",
+    val session: String? = null,
+    val preview: String = "",
+    val elapsed: Long = 0,
+)
+
+@Serializable
+data class TasksDto(
+    val runs: List<TaskRun> = emptyList(),
+    val processes: List<TaskProc> = emptyList(),
+    @SerialName("llm_busy") val llmBusy: Boolean? = null,
+)
+
+@Serializable
 data class PairPayload(val url: String, val token: String)

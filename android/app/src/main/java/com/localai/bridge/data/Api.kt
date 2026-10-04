@@ -186,6 +186,12 @@ class Api(private val baseUrl: String, private val token: String) {
         dest
     }
 
+    // ---- running tasks
+    suspend fun tasks(): TasksDto = get("/api/tasks")
+    suspend fun stopTask(sessionId: String) { send<JsonObject>("POST", "/api/tasks/$sessionId/stop", JsonObject(emptyMap())) }
+    suspend fun killProcess(pid: Long) { send<JsonObject>("POST", "/api/processes/$pid/kill", JsonObject(emptyMap())) }
+    suspend fun killAll(): JsonObject = send("POST", "/api/tasks/kill_all", JsonObject(emptyMap()))
+
     // ---- exec & memory
     suspend fun exec(language: String, code: String): ExecResult =
         send("POST", "/api/exec", buildJsonObject { put("language", language); put("code", code) })

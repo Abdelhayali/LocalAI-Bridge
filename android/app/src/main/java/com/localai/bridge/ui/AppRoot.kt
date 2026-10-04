@@ -152,6 +152,7 @@ fun MainShell(vm: MainViewModel) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     // phone woke up / app reopened: pick up replies the PC kept working on meanwhile
     androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_START) { vm.onAppForeground() }
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_STOP) { vm.onAppBackground() }
     val scope = rememberCoroutineScope()
     var renaming by remember { mutableStateOf<Pair<String, String>?>(null) }
     var confirmDelete by remember { mutableStateOf<String?>(null) }
@@ -178,6 +179,10 @@ fun MainShell(vm: MainViewModel) {
                     Icon(Icons.Default.Add, null); Spacer(Modifier.size(6.dp)); Text("New chat")
                 }
                 Spacer(Modifier.height(8.dp))
+                NavigationDrawerItem(
+                    label = { Text("Running tasks" + if (vm.backgroundTaskCount > 0) "  (${vm.backgroundTaskCount})" else "") },
+                    icon = { Icon(Icons.Default.Memory, null) },
+                    selected = vm.screen == Screen.TASKS, onClick = { go(Screen.TASKS) })
                 NavigationDrawerItem(label = { Text("Files on PC") }, icon = { Icon(Icons.Default.Folder, null) },
                     selected = vm.screen == Screen.FILES, onClick = { go(Screen.FILES) })
                 NavigationDrawerItem(label = { Text("Terminal") }, icon = { Icon(Icons.Default.Terminal, null) },
@@ -216,6 +221,7 @@ fun MainShell(vm: MainViewModel) {
             Screen.TERMINAL -> TerminalScreen(vm, openDrawer)
             Screen.MEMORY -> MemoryScreen(vm, openDrawer)
             Screen.SETTINGS -> SettingsScreen(vm, openDrawer)
+            Screen.TASKS -> TasksScreen(vm, openDrawer)
         }
     }
 

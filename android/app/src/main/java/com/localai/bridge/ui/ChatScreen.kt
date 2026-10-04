@@ -166,6 +166,19 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
             }
             if (vm.loadingSession) LinearProgressIndicator(Modifier.fillMaxWidth())
             vm.stats?.let { Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) { StatsLine(it) } }
+            if (vm.backgroundTaskCount > 0) {
+                Surface(color = MaterialTheme.colorScheme.tertiaryContainer,
+                    modifier = Modifier.fillMaxWidth().clickable { vm.screen = Screen.TASKS }) {
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                        val t = vm.tasks
+                        val orphan = t?.llmBusy == true && t.runs.isEmpty()
+                        Text(if (orphan) "  The LLM is busy with an earlier request - tap to see"
+                             else "  ${vm.backgroundTaskCount} task(s) running on your PC - tap to see / stop",
+                            style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
 
             Box(Modifier.weight(1f)) {
                 if (vm.items.isEmpty() && !vm.loadingSession) EmptyChat()

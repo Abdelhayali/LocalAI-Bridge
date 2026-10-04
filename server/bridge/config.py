@@ -30,6 +30,8 @@ def _defaults() -> dict:
         "require_tool_approval": True,   # phone must approve run_code / write_file
         "exec_timeout_sec": 120,
         "max_tool_rounds": 10,
+        "max_tokens": 16384,             # per reply (incl. thinking); some servers default to only 1024
+        "context_size": 0,               # 0 = detect from the LLM server
         "tunnel_mode": "quick",          # "quick" (random trycloudflare URL), "named", or "off"
         "tunnel_token": "",              # for named tunnels (cloudflared tunnel run --token ...)
         "public_url": "",                # for named tunnels: your fixed https hostname

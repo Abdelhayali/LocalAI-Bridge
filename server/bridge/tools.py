@@ -3,14 +3,39 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 
 from . import db
 from .config import config
 
 MAX_OUT = 20_000
+
+# Which chat session the current tool call belongs to (asyncio.to_thread copies context variables)
+current_session: ContextVar[str | None] = ContextVar("current_session", default=None)
+# Running code processes: pid -> info (shown in the app's "Running tasks" screen)
+PROCS: dict[int, dict] = {}
+_procs_lock = threading.Lock()
+
+
+def list_procs() -> list[dict]:
+    now = time.time()
+    with _procs_lock:
+        return [{**p, "elapsed": round(now - p["started"])} for p in PROCS.values()]
+
+
+def kill_procs(session: str | None = None, pid: int | None = None) -> int:
+    """Kill running code processes (and their children). session=None and pid=None kills all."""
+    with _procs_lock:
+        targets = [p for p in PROCS.values()
+                   if (pid is None or p["pid"] == pid) and (session is None or p["session"] == session)]
+    for p in targets:
+        p["killed"] = True
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(p["pid"])], capture_output=True)
+    return len(targets)
 TEXT_EXT = {".txt", ".md", ".py", ".js", ".ts", ".json", ".csv", ".log", ".xml", ".html", ".css",
             ".yaml", ".yml", ".ini", ".cfg", ".toml", ".bat", ".ps1", ".c", ".h", ".cpp", ".java",
             ".kt", ".v", ".sv", ".vhd", ".tcl", ".sp", ".tex", ".sh", ".sql", ".rs", ".go"}
@@ -219,6 +244,9 @@ def run_code(language: str, code: str, timeout: int | None = None) -> dict:
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     proc = subprocess.Popen(cmd, cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
+    with _procs_lock:
+        PROCS[proc.pid] = {"pid": proc.pid, "language": lang, "session": current_session.get(),
+                           "preview": code.strip().splitlines()[0][:80] if code.strip() else "", "started": time.time()}
     try:
         out, err = proc.communicate(timeout=timeout)
         code_ = proc.returncode
@@ -229,6 +257,10 @@ def run_code(language: str, code: str, timeout: int | None = None) -> dict:
         code_, timed_out = -1, True
     finally:
         script.unlink(missing_ok=True)
+        with _procs_lock:
+            info = PROCS.pop(proc.pid, None)
+    if info and info.get("killed"):
+        err = (err or b"") + b"\n[stopped by the user from the app]"
     dec = lambda b: b.decode("utf-8", errors="replace")
     return {"exit_code": code_, "timed_out": timed_out,
             "stdout": truncate(dec(out)), "stderr": truncate(dec(err), 8000)}
