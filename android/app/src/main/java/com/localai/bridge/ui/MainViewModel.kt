@@ -192,7 +192,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (s.running) {
                 // the reply is still generating on the PC: re-attach to its stream
                 trimToLastUser()
-                approvals.clear()
                 streamJob = viewModelScope.launch { consume(a.resume(s.id)) }
             }
         } catch (e: Exception) {
@@ -349,11 +348,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         try { tasks = api?.tasks() } catch (_: Exception) { }
     }
 
+    /** The PC says the open chat waits for an approval but no dialog is showing: fetch and show it. */
+    private suspend fun restoreMissingApprovals() {
+        val sid = currentSessionId ?: return
+        val waiting = tasks?.runs?.any { it.sessionId == sid && it.waitingApproval } == true
+        if (!waiting || approvals.isNotEmpty() || loadingSession) return
+        val pending = runCatching { api!!.session(sid).pendingApprovals }.getOrNull() ?: return
+        if (sid == currentSessionId) pending.filter { p -> approvals.none { it.id == p.id } }.forEach { approvals += it }
+    }
+
     private fun startTaskPolling() {
         tasksJob?.cancel()
         tasksJob = viewModelScope.launch {
             while (true) {
                 if (screen != Screen.TASKS) runCatching { tasks = api?.tasks() }  // Tasks screen refreshes itself
+                restoreMissingApprovals()
                 kotlinx.coroutines.delay(5_000)
             }
         }
@@ -413,7 +422,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         reconnectJob?.cancel()
         stats = s.stats ?: stats
         items.clear(); items.addAll(toItems(s.messages, s.summaryUpto))
-        approvals.clear()
+        approvals.clear(); approvals.addAll(s.pendingApprovals)
         if (s.running) {
             trimToLastUser()
             streamStartMs = System.currentTimeMillis(); phase = "prompt"
@@ -480,7 +489,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             "approval_required" -> {
                 val id = str(ev, "id")
                 updateTool(id) { it.copy(status = "awaiting") }
-                approvals += PendingApproval(id, str(ev, "name"), ev["args"]?.jsonObject ?: JsonObject(emptyMap()))
+                if (approvals.none { it.id == id })
+                    approvals += PendingApproval(id, str(ev, "name"), ev["args"]?.jsonObject ?: JsonObject(emptyMap()))
             }
             "tool_result" -> {
                 val id = str(ev, "id")
