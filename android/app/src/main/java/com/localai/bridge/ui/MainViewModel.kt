@@ -286,6 +286,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     prefs.lastSession = it
                 }
                 if (editId != null) a.truncate(sid, editId)
+                if (sessions.none { it.id == sid }) {
+                    // show the new chat in the drawer immediately (named after this first message)
+                    val title = text.replace(Regex("\\s+"), " ").take(48).ifBlank { atts.firstOrNull()?.filename ?: "Chat" }
+                    sessions.add(0, com.localai.bridge.data.SessionDto(sid, title, currentModel, running = true))
+                    currentTitle = title
+                }
                 consume(a.chat(sid, text, atts.map { it.id }, currentModel.ifBlank { null }, webSearch, autoApprove,
                     if (autoCompress) compressAt / 100.0 else 0.0))
             } catch (e: com.localai.bridge.data.ApiException) {

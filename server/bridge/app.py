@@ -616,6 +616,9 @@ async def chat(sid: str, body: ChatIn):
         if a:
             atts.append({"id": a["id"], "filename": a["filename"], "kind": a["kind"], "mime": a["mime"]})
     db.add_message(sid, "user", body.content, attachments=atts or None)
+    if s["title"] == "New chat":  # name the chat right away, not after the reply
+        first = re.sub(r"\s+", " ", body.content).strip() or (atts[0]["filename"] if atts else "")
+        db.update_session(sid, title=first[:48] or "Chat")
     model = body.model or s["model"] or None
     if body.model and body.model != s["model"]:
         db.update_session(sid, model=body.model)
