@@ -82,5 +82,10 @@ suspend fun Api.agentReply(permissionId: String, reply: String, directory: Strin
     sendJson<JsonObject>("POST", "/api/agent/permissions/$permissionId",
         buildJsonObject { put("reply", reply); put("directory", directory) })
 }
+suspend fun Api.mkdir(parent: String, name: String): JsonObject =
+    sendJson("POST", "/api/fs/mkdir", buildJsonObject { put("parent", parent); put("name", name) })
+suspend fun Api.renamePath(path: String, newName: String): JsonObject =
+    sendJson("POST", "/api/fs/rename", buildJsonObject { put("path", path); put("new_name", newName) })
+
 fun Api.agentEvents(id: String, auto: Boolean): Flow<JsonObject> =
     sseGet("/api/agent/sessions/$id/events", mapOf("auto" to auto.toString()))

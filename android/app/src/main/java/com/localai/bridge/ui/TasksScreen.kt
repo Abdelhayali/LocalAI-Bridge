@@ -60,6 +60,7 @@ private fun mmss(sec: Long) = "%d:%02d".format(sec / 60, sec % 60)
 @Composable
 fun TasksScreen(vm: MainViewModel, openDrawer: () -> Unit) {
     var confirmKill by remember { mutableStateOf(false) }
+    val agentVm: AgentViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     LaunchedEffect(Unit) {
         while (true) { vm.refreshTasks(); kotlinx.coroutines.delay(2000) }  // fast refresh while visible
     }
@@ -111,6 +112,12 @@ fun TasksScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                                 Text(a.directory, style = MaterialTheme.typography.bodySmall, maxLines = 1,
                                     overflow = TextOverflow.Ellipsis)
                             }
+                            OutlinedButton(onClick = {
+                                agentVm.api = vm.api
+                                agentVm.open(a.id)
+                                vm.screen = Screen.AGENT
+                            }) { Text("Open") }
+                            Spacer(Modifier.size(6.dp))
                             OutlinedButton(onClick = { vm.stopAgent(a.id) }) { Text("Stop") }
                         }
                     }

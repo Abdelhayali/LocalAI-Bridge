@@ -40,7 +40,8 @@ class AgentMsg(val id: String, role: String) {
 /** BETA: state of the OpenCode "Code agent" screen. */
 class AgentViewModel(app: Application) : AndroidViewModel(app) {
     var api: Api? = null
-    var autoApprove = false
+    var autoApprove by mutableStateOf(false)   // approve edits/commands of this agent without asking
+    var autoInitialized = false
 
     val sessions = mutableStateListOf<AgentSessionDto>()
     var installed by mutableStateOf<Boolean?>(null)
@@ -185,6 +186,13 @@ class AgentViewModel(app: Application) : AndroidViewModel(app) {
     fun abort() = viewModelScope.launch {
         val id = current?.id ?: return@launch
         try { api?.agentAbort(id); toast = "Stopping the agent…" } catch (e: Exception) { toast = e.message }
+    }
+
+    /** Turn auto-approve on/off; pending requests are approved right away and the live stream restarts. */
+    fun updateAutoApprove(on: Boolean) {
+        autoApprove = on
+        if (on) permissions.toList().forEach { reply(it, "once") }
+        current?.id?.let { open(it) }
     }
 
     fun reply(p: AgentPermission, reply: String) = viewModelScope.launch {

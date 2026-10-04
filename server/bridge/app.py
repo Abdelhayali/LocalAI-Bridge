@@ -160,7 +160,7 @@ def system_prompt() -> str:
     mems = db.list_memories(60)
     parts = [config["system_prompt"],
              f"Current date/time: {time.strftime('%Y-%m-%d %H:%M')}",
-             f"Allowed folders: {', '.join(config['allowed_roots'])}",
+             f"Allowed folders: {', '.join(tools.allowed_roots())}",
              f"Code working directory: {config['workspace']}"]
     if mems:
         parts.append("Long-term memories about the user:\n" + "\n".join(f"- {m['content']}" for m in reversed(mems)))
@@ -523,7 +523,7 @@ async def info():
         models, llm_ok = [], False
     return {"llm_base_url": llm_api_base(), "llm_ok": llm_ok, "models": models,
             "default_model": config["default_model"] or (models[0] if models else ""),
-            "allowed_roots": config["allowed_roots"], "workspace": config["workspace"],
+            "allowed_roots": tools.allowed_roots(), "workspace": config["workspace"],
             "code_exec": config["enable_code_exec"], "require_approval": config["require_tool_approval"]}
 
 
@@ -830,7 +830,49 @@ async def upload_get(aid: str):
 # ---------------------------------------------------------------- routes: filesystem
 @app.get("/api/fs/roots", dependencies=[Auth])
 async def fs_roots():
-    return {"roots": config["allowed_roots"], "workspace": config["workspace"]}
+    return {"roots": tools.allowed_roots(), "workspace": config["workspace"]}
+
+
+class MkdirIn(BaseModel):
+    parent: str
+    name: str
+
+
+class RenameIn(BaseModel):
+    path: str
+    new_name: str
+
+
+@app.post("/api/fs/mkdir", dependencies=[Auth])
+async def fs_mkdir(body: MkdirIn):
+    try:
+        parent = tools.resolve_path(body.parent)
+        new = tools.resolve_path(str(parent / tools.safe_name(body.name)))
+    except tools.ToolError as e:
+        raise HTTPException(403, str(e))
+    if not parent.is_dir():
+        raise HTTPException(400, "Parent is not a folder")
+    if new.exists():
+        raise HTTPException(409, "Something with that name already exists")
+    new.mkdir()
+    return {"path": str(new)}
+
+
+@app.post("/api/fs/rename", dependencies=[Auth])
+async def fs_rename(body: RenameIn):
+    try:
+        src = tools.resolve_path(body.path)
+        if any(src == Path(r).resolve() for r in tools.allowed_roots()):
+            raise tools.ToolError("Can't rename a top-level allowed folder or drive")
+        dst = tools.resolve_path(str(src.parent / tools.safe_name(body.new_name)))
+    except tools.ToolError as e:
+        raise HTTPException(403, str(e))
+    if not src.exists():
+        raise HTTPException(404, "Not found")
+    if dst.exists():
+        raise HTTPException(409, "Something with that name already exists")
+    src.rename(dst)
+    return {"path": str(dst)}
 
 
 @app.get("/api/fs/list", dependencies=[Auth])

@@ -1,6 +1,7 @@
 """Tools the LLM (and the phone app directly) can use: code execution, filesystem, memory."""
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -46,6 +47,25 @@ class ToolError(Exception):
 
 
 # ---------------- path safety ----------------
+def allowed_roots() -> list[str]:
+    """Configured allowed folders; "*" means every drive of this PC (C:, D:, ...)."""
+    roots = []
+    for r in config["allowed_roots"]:
+        if r == "*":
+            roots += [d for d in os.listdrives() if Path(d).exists()]
+        else:
+            roots.append(r)
+    return list(dict.fromkeys(roots))
+
+
+def safe_name(name: str) -> str:
+    """A single folder/file name (no path separators or Windows-reserved characters)."""
+    name = (name or "").strip().rstrip(". ")
+    if not name or re.search(r'[<>:"/\\|?*\x00-\x1f]', name) or name in (".", ".."):
+        raise ToolError('Invalid name (avoid \\ / : * ? " < > |)')
+    return name[:200]
+
+
 def resolve_path(p: str) -> Path:
     """Resolve p (absolute, or relative to the workspace) and ensure it is inside an allowed root."""
     if not p:
@@ -54,10 +74,10 @@ def resolve_path(p: str) -> Path:
     if not path.is_absolute():
         path = Path(config["workspace"]) / path
     path = path.resolve()
-    for root in config["allowed_roots"]:
+    for root in allowed_roots():
         if path == Path(root).resolve() or path.is_relative_to(Path(root).resolve()):
             return path
-    raise ToolError(f"Access denied: {path} is outside the allowed folders {config['allowed_roots']}")
+    raise ToolError(f"Access denied: {path} is outside the allowed folders {allowed_roots()}")
 
 
 def truncate(s: str, n=MAX_OUT) -> str:

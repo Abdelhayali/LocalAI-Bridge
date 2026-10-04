@@ -76,6 +76,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.localai.bridge.data.AgentPart
 import com.localai.bridge.data.AgentPermission
 import com.localai.bridge.data.FsEntry
+import com.localai.bridge.data.mkdir
+import com.localai.bridge.data.renamePath
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material3.Switch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -84,7 +88,7 @@ import kotlinx.coroutines.launch
 fun AgentScreen(vm: MainViewModel, openDrawer: () -> Unit) {
     val avm: AgentViewModel = viewModel()
     avm.api = vm.api
-    avm.autoApprove = vm.autoApprove
+    if (!avm.autoInitialized) { avm.autoApprove = vm.autoApprove; avm.autoInitialized = true }
     LaunchedEffect(Unit) { avm.refreshList() }
     avm.toast?.let { vm.toast = it; avm.toast = null }
     if (avm.current == null) AgentList(vm, avm, openDrawer) else AgentSessionView(avm)
@@ -134,7 +138,9 @@ private fun FolderPicker(vm: MainViewModel, onPick: (String) -> Unit, onDismiss:
     val entries = remember { mutableStateListOf<FsEntry>() }
     val roots = remember { mutableStateListOf<String>() }
     var parent by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(path) {
+    var reload by remember { mutableStateOf(0) }
+    var nameDialog by remember { mutableStateOf<Pair<String, FsEntry?>?>(null) }  // (initial text, entry to rename or null = new)
+    LaunchedEffect(path, reload) {
         val a = vm.api ?: return@LaunchedEffect
         try {
             if (path == null) { roots.clear(); roots.addAll(a.roots().roots); entries.clear() }
@@ -157,8 +163,16 @@ private fun FolderPicker(vm: MainViewModel, onPick: (String) -> Unit, onDismiss:
                                 path = parent?.takeIf { p -> roots.any { p.startsWith(it.trimEnd('\\', '/')) } }
                             })
                     }
+                    item {
+                        ListItem(headlineContent = { Text("New folder…", color = MaterialTheme.colorScheme.primary) },
+                            leadingContent = { Icon(Icons.Default.CreateNewFolder, null, tint = MaterialTheme.colorScheme.primary) },
+                            modifier = Modifier.clickable { nameDialog = "" to null })
+                    }
                     items(entries, key = { it.path }) { e ->
                         ListItem(headlineContent = { Text(e.name) }, leadingContent = { Icon(Icons.Default.Folder, null) },
+                            trailingContent = {
+                                IconButton(onClick = { nameDialog = e.name to e }) { Icon(Icons.Default.Edit, "Rename") }
+                            },
                             modifier = Modifier.clickable { path = e.path })
                     }
                 }
@@ -167,6 +181,32 @@ private fun FolderPicker(vm: MainViewModel, onPick: (String) -> Unit, onDismiss:
         confirmButton = { TextButton(enabled = path != null, onClick = { path?.let(onPick) }) { Text("Use this folder") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+    nameDialog?.let { (initial, entry) ->
+        var name by remember(entry, initial) { mutableStateOf(initial) }
+        AlertDialog(
+            onDismissRequest = { nameDialog = null },
+            title = { Text(if (entry == null) "New folder" else "Rename folder") },
+            text = { OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("Name") }) },
+            confirmButton = {
+                TextButton(enabled = name.isNotBlank(), onClick = {
+                    val a = vm.api
+                    val dir = path
+                    nameDialog = null
+                    scope.launch {
+                        try {
+                            if (entry == null && a != null && dir != null) {
+                                a.mkdir(dir, name.trim()); vm.toast = "Folder created"
+                            } else if (entry != null && a != null) {
+                                a.renamePath(entry.path, name.trim()); vm.toast = "Renamed"
+                            }
+                        } catch (e: Exception) { vm.toast = e.message }
+                        reload++
+                    }
+                }) { Text(if (entry == null) "Create" else "Rename") }
+            },
+            dismissButton = { TextButton(onClick = { nameDialog = null }) { Text("Cancel") } },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -174,6 +214,7 @@ private fun FolderPicker(vm: MainViewModel, onPick: (String) -> Unit, onDismiss:
 private fun AgentSessionView(avm: AgentViewModel) {
     val d = avm.current!!
     var draft by remember { mutableStateOf("") }
+    var confirmAuto by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
     BackHandler { avm.close() }
     val lastLen = avm.messages.lastOrNull()?.parts?.sumOf { it.text.length + it.status.length } ?: 0
@@ -182,6 +223,15 @@ private fun AgentSessionView(avm: AgentViewModel) {
     Scaffold(topBar = {
         TopAppBar(
             navigationIcon = { IconButton(onClick = { avm.close() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+            actions = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(end = 8.dp)) {
+                    Switch(checked = avm.autoApprove, onCheckedChange = { on ->
+                        if (on) confirmAuto = true else avm.updateAutoApprove(false)
+                    })
+                    Text("Auto-approve", style = MaterialTheme.typography.labelSmall,
+                        color = if (avm.autoApprove) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
             title = {
                 Column {
                     Text(d.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -227,6 +277,14 @@ private fun AgentSessionView(avm: AgentViewModel) {
         }
     }
     avm.permissions.firstOrNull()?.let { PermissionDialog(avm, it) }
+    if (confirmAuto) AlertDialog(
+        onDismissRequest = { confirmAuto = false },
+        title = { Text("Auto-approve this agent?") },
+        text = { Text("The agent will edit files and run commands in ${d.directory} without asking you. " +
+            "Only use this for projects you have a backup of (e.g. in git).") },
+        confirmButton = { TextButton(onClick = { confirmAuto = false; avm.updateAutoApprove(true) }) { Text("Turn on") } },
+        dismissButton = { TextButton(onClick = { confirmAuto = false }) { Text("Cancel") } },
+    )
 }
 
 @Composable
