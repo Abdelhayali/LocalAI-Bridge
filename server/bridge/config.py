@@ -20,7 +20,7 @@ def _defaults() -> dict:
     home = str(Path.home())
     return {
         "host": "127.0.0.1",          # keep on localhost; cloudflared reaches it locally
-        "port": 8766,                    # BETA (stable bridge uses 8765)
+        "port": 8765,
         "llm_base_url": "http://127.0.0.1:8080",  # llama.cpp server (no API key). "/v1" is added automatically
         "default_model": "",
         "auth_token": secrets.token_urlsafe(32),

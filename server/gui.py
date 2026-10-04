@@ -39,7 +39,7 @@ AUTO_MODEL = "(auto - first available)"
 
 def single_instance() -> bool:
     """Named mutex: only one control panel at a time."""
-    ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\LocalAIBridgeGUIBeta")
+    ctypes.windll.kernel32.CreateMutexW(None, False, "Global\\LocalAIBridgeGUI")
     return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
 
 
@@ -49,7 +49,7 @@ class App:
         self.q: queue.Queue = queue.Queue()
         self.srv = BridgeServer(log=lambda m: self.q.put(("log", m)),
                                 on_url=lambda u: self.q.put(("url", u)))
-        root.title("LocalAI Bridge Server - BETA (OpenCode agent)")
+        root.title("LocalAI Bridge Server")
         root.geometry("1000x680")
         root.minsize(780, 580)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -271,7 +271,7 @@ if __name__ == "__main__":
     if not single_instance():
         r = tk.Tk()
         r.withdraw()
-        messagebox.showinfo("LocalAI Bridge", "The LocalAI Bridge BETA control panel is already running.\n"
+        messagebox.showinfo("LocalAI Bridge", "The LocalAI Bridge control panel is already running.\n"
                                               "Look for it in the taskbar.")
         sys.exit(0)
     root = tk.Tk()

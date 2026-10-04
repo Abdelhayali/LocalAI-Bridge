@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from . import db, tools
 from .config import DATA_DIR, config, llm_api_base
 
-app = FastAPI(title="LocalAI Bridge (beta)", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="LocalAI Bridge", docs_url=None, redoc_url=None, openapi_url=None)
 state = {"public_url": None}
 MAX_UPLOAD = 50 * 1024 * 1024
 
@@ -512,7 +512,7 @@ def sse_response(run: Run, replay=False):
 # ---------------------------------------------------------------- routes: misc
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "name": "LocalAI Bridge", "beta": True}
+    return {"ok": True, "name": "LocalAI Bridge"}
 
 
 @app.get("/api/info", dependencies=[Auth])
@@ -935,7 +935,7 @@ async def memory_add(body: MemoryIn):
     return {"id": db.add_memory(body.content.strip())}
 
 
-# ---------------------------------------------------------------- BETA: OpenCode coding agent
+# ---------------------------------------------------------------- OpenCode coding agent (beta feature)
 from . import agent  # noqa: E402
 
 app.include_router(agent.router, dependencies=[Auth])

@@ -37,6 +37,7 @@ Android app ──HTTPS──► Cloudflare tunnel ──► LocalAI Bridge serv
 | 🌐 **Web search** | Tap 🌐 in the chat: the AI can search the internet (DuckDuckGo, no API key) and read web pages |
 | 📊 **Live status & stats** | See what the PC is doing (reading, thinking, writing, running a tool) with tokens, speed and a timer. Each chat shows context used / available and tokens per second |
 | ⚡ **Auto-approve** | Optional: let the AI run code and write files without asking (Settings, with a warning) |
+| 🤖 **Code agent (beta)** | [OpenCode](https://opencode.ai) works on any project folder of your PC with your local model: reads code, edits files, runs commands. Every edit and command asks for approval (or per-session auto-approve) |
 | 🧠 **Memory** | The AI saves facts about you that carry across all chats. View, add or delete them in the app |
 | 🌗 **Themes** | Light, dark or follow the system |
 | 🔒 **Security** | 256-bit token, HTTPS tunnel, server only listens on localhost, approval for code and file writes |
@@ -118,6 +119,25 @@ Open the app and choose one:
 
 ---
 
+## Code agent (beta): OpenCode on your PC
+
+☰ → **Code agent (beta)** lets [OpenCode](https://opencode.ai) work on a project folder of your PC with your
+local LLM. It searches and reads code, edits files and runs commands.
+
+1. Install OpenCode once on the PC:
+   ```bash
+   npm install -g --allow-scripts=opencode-ai opencode-ai
+   ```
+2. In the app: **New agent session**, pick a project folder (you can create or rename folders there),
+   then describe a task, e.g. *"add input validation to app.py and run the tests"*.
+3. Every file edit, shell command and web fetch asks for approval: **Allow / Always / Reject**,
+   with the exact diff or command shown. The **Auto-approve** switch in the session skips this.
+4. Working agents appear in **Running tasks** (Open / Stop), and **Kill all** stops them too.
+
+The bridge starts its own OpenCode server (localhost only, random password) and generates its config
+from the bridge settings (`server/data/opencode/opencode.json`). Only folders in `allowed_roots` can be used.
+To give it the whole PC, set `"allowed_roots": ["*"]` (every drive).
+
 ## Configuration: `server/config.json`
 
 Created on the first run. Click **Open config.json** in the control panel, edit it, then restart the server.
@@ -126,7 +146,7 @@ Created on the first run. Click **Open config.json** in the control panel, edit 
 |---|---|---|
 | `llm_base_url` | `http://127.0.0.1:8080` | Your LLM server (`/v1` is added automatically) |
 | `default_model` | `""` | Empty = first model the LLM server reports |
-| `allowed_roots` | your user folder + `workspace` | **Only** these folders are visible to the app and the AI. Add e.g. `"D:\\"` |
+| `allowed_roots` | your user folder + `workspace` | **Only** these folders are visible to the app and the AI. Add e.g. `"D:\\"`, or `"*"` for every drive |
 | `workspace` | `<project>\workspace` | Where the AI's code runs and saves files |
 | `enable_code_exec` | `true` | Allow running code at all |
 | `require_tool_approval` | `true` | Phone must approve code runs and file writes |
