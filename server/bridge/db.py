@@ -27,6 +27,9 @@ _conn.executescript(
 )
 # Separate table (not a new column) so an older server version sharing this database keeps working
 _conn.execute("CREATE TABLE IF NOT EXISTS session_stats(session_id TEXT PRIMARY KEY, stats TEXT)")
+# Compressed history: messages with id <= upto_id are replaced by `summary` when talking to the model
+_conn.execute("CREATE TABLE IF NOT EXISTS session_summary("
+              "session_id TEXT PRIMARY KEY, summary TEXT, upto_id INTEGER, created REAL)")
 _conn.commit()
 
 
@@ -69,6 +72,7 @@ def update_session(sid, **fields):
 
 
 def delete_session(sid):
+    _q("DELETE FROM session_summary WHERE session_id=?", (sid,))
     _q("DELETE FROM session_stats WHERE session_id=?", (sid,))
     _q("DELETE FROM messages WHERE session_id=?", (sid,))
     _q("DELETE FROM sessions WHERE id=?", (sid,))
@@ -84,9 +88,19 @@ def get_stats(sid):
     return json.loads(r["stats"]) if r else None
 
 
+def set_summary(sid, summary: str, upto_id: int):
+    _q("INSERT OR REPLACE INTO session_summary VALUES(?,?,?,?)", (sid, summary, upto_id, time.time()))
+
+
+def get_summary(sid):
+    return _q("SELECT summary, upto_id FROM session_summary WHERE session_id=?", (sid,), one=True)
+
+
 def truncate_session(sid, from_message_id):
     """Delete a message and everything after it (used when the user edits a message)."""
     _q("DELETE FROM messages WHERE session_id=? AND id>=?", (sid, from_message_id))
+    # an edit inside the summarized part invalidates the summary
+    _q("DELETE FROM session_summary WHERE session_id=? AND upto_id>=?", (sid, from_message_id))
     update_session(sid)
 
 

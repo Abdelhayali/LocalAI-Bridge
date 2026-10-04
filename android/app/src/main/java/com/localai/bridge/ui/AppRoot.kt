@@ -150,6 +150,8 @@ fun PairScreen(vm: MainViewModel) {
 @Composable
 fun MainShell(vm: MainViewModel) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
+    // phone woke up / app reopened: pick up replies the PC kept working on meanwhile
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_START) { vm.onAppForeground() }
     val scope = rememberCoroutineScope()
     var renaming by remember { mutableStateOf<Pair<String, String>?>(null) }
     var confirmDelete by remember { mutableStateOf<String?>(null) }

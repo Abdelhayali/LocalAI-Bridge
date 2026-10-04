@@ -70,6 +70,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var themeMode by mutableStateOf(prefs.themeMode)   // system | light | dark
     var webSearch by mutableStateOf(prefs.webSearch)   // give the model internet search
     var autoApprove by mutableStateOf(prefs.autoApprove)   // run code / write files without asking
+    var autoCompress by mutableStateOf(prefs.autoCompress)
+    var compressAt by mutableStateOf(prefs.compressAt)       // percent of the context
+    private var turnEnded = false                            // got "done" or "error" (vs. connection dropped)
+    private var reconnectJob: Job? = null
     private var turnCompleted = false
 
     // live status of a running reply (shown above the input while streaming)
@@ -178,7 +182,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             stats = s.stats
             currentModel = s.model?.takeIf { it.isNotBlank() } ?: info?.defaultModel.orEmpty()
             prefs.lastSession = s.id
-            items.clear(); items.addAll(toItems(s.messages))
+            items.clear(); items.addAll(toItems(s.messages, s.summaryUpto))
             approvals.clear(); approvals.addAll(s.pendingApprovals)
             if (s.running) {
                 // the reply is still generating on the PC: re-attach to its stream
@@ -221,10 +225,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { runCatching { api?.setSessionModel(id, model) } }
     }
 
-    private fun toItems(msgs: List<MessageDto>): List<ChatItem> {
+    private fun toItems(msgs: List<MessageDto>, summaryUpto: Long? = null): List<ChatItem> {
         val out = mutableListOf<ChatItem>()
         val toolIndex = mutableMapOf<String, Int>()
+        val markerAfter = summaryUpto?.let { upto -> msgs.lastOrNull { it.id <= upto }?.id }
         for (m in msgs) {
+            if (markerAfter != null && m.id > markerAfter && out.none { it is ChatItem.Notice && it.key == "summary" }) {
+                out += ChatItem.Notice("summary", "Messages above were compressed into a summary - the AI remembers them in short form.")
+            }
             when (m.role) {
                 "user" -> out += ChatItem.User(nextKey(), m.content.orEmpty(), m.attachments, m.id)
                 "assistant" -> {
@@ -267,24 +275,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         streamStartMs = System.currentTimeMillis()
         phase = "sending"
         streamJob = viewModelScope.launch {
+            var stillRunning = false
             try {
                 val sid = currentSessionId ?: a.createSession(currentModel).id.also {
                     currentSessionId = it
                     prefs.lastSession = it
                 }
                 if (editId != null) a.truncate(sid, editId)
-                consume(a.chat(sid, text, atts.map { it.id }, currentModel.ifBlank { null }, webSearch, autoApprove))
+                consume(a.chat(sid, text, atts.map { it.id }, currentModel.ifBlank { null }, webSearch, autoApprove,
+                    if (autoCompress) compressAt / 100.0 else 0.0))
+            } catch (e: com.localai.bridge.data.ApiException) {
+                if (e.code == 409) {
+                    // the PC is still finishing the previous reply (e.g. the phone was off): show it instead of failing
+                    stillRunning = true
+                    items.removeAt(items.lastIndex)
+                    draft = text; pendingAttachments.addAll(atts)
+                    toast = "Your PC is still working on the previous reply - showing it now"
+                } else items += ChatItem.Notice(nextKey(), e.message ?: e.toString(), error = true)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 items += ChatItem.Notice(nextKey(), e.message ?: e.toString(), error = true)
             } finally {
                 streaming = false
             }
+            if (stillRunning) reattach()
         }
     }
 
     private suspend fun consume(events: kotlinx.coroutines.flow.Flow<JsonObject>) {
         streaming = true
         turnCompleted = false
+        turnEnded = false
+        var dropped = false
         val now = System.currentTimeMillis()
         if (streamStartMs == 0L) streamStartMs = now
         lastEventMs = now
@@ -294,21 +317,82 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            items += ChatItem.Notice(nextKey(), "Connection lost: ${e.message}. Reopen the chat to resume.", true)
+            dropped = true
         } finally {
             streaming = false
             phase = ""; streamStartMs = 0L; liveTokens = 0; liveTps = null
             runCatching { loadSessions() }
         }
         if (turnCompleted) syncFromServer()
+        else if (dropped || !turnEnded) {
+            // phone slept / network changed: the PC keeps working, so reconnect and pick the reply up again
+            items += ChatItem.Notice(nextKey(), "Connection lost - reconnecting…")
+            scheduleReconnect()
+        }
     }
+
+    /** Called when the app comes back to the foreground. */
+    fun onAppForeground() {
+        if (!paired || streaming || currentSessionId == null) return
+        viewModelScope.launch { reattach() }
+    }
+
+    private fun scheduleReconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = viewModelScope.launch {
+            var wait = 2_000L
+            repeat(40) {
+                kotlinx.coroutines.delay(wait)
+                if (streaming || reattach()) return@launch
+                wait = (wait * 2).coerceAtMost(30_000L)
+            }
+        }
+    }
+
+    /** Re-sync the open chat with the PC; re-attach to a reply that is still running. False if unreachable. */
+    private suspend fun reattach(): Boolean {
+        val a = api ?: return false
+        val sid = currentSessionId ?: return false
+        val s = try { a.session(sid) } catch (e: Exception) { return false }
+        if (streaming || sid != currentSessionId) return true
+        reconnectJob?.cancel()
+        stats = s.stats ?: stats
+        items.clear(); items.addAll(toItems(s.messages, s.summaryUpto))
+        approvals.clear()
+        if (s.running) {
+            trimToLastUser()
+            streamStartMs = System.currentTimeMillis(); phase = "prompt"
+            streamJob = viewModelScope.launch { consume(a.resume(sid)) }
+        }
+        return true
+    }
+
+    /** Summarize the older part of this chat now (frees context; full history stays visible). */
+    fun compressNow() {
+        val a = api ?: return
+        val sid = currentSessionId
+        if (sid == null) { toast = "Nothing to compress yet"; return }
+        if (streaming) return
+        streaming = true
+        streamStartMs = System.currentTimeMillis()
+        phase = "compressing"
+        streamJob = viewModelScope.launch {
+            try { consume(a.compress(sid)) } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { items += ChatItem.Notice(nextKey(), e.message ?: e.toString(), error = true) }
+            finally { streaming = false }
+        }
+    }
+
+    fun updateAutoCompress(on: Boolean) { autoCompress = on; prefs.autoCompress = on }
+    fun updateCompressAt(pct: Int) { compressAt = pct; prefs.compressAt = pct }
 
     /** Reload the finished conversation so every message has its server id (needed for editing). */
     private suspend fun syncFromServer() {
         val sid = currentSessionId ?: return
         runCatching {
             val s = api!!.session(sid)
-            if (!s.running && !streaming) { items.clear(); items.addAll(toItems(s.messages)) }
+            stats = s.stats ?: stats
+            if (!s.running && !streaming) { items.clear(); items.addAll(toItems(s.messages, s.summaryUpto)) }
         }
     }
 
@@ -352,9 +436,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 updateTool(id) { it.copy(output = str(ev, "output"), status = "done", attachments = atts) }
             }
             "title" -> currentTitle = str(ev, "title")
-            "done" -> turnCompleted = true
+            "done" -> { turnCompleted = true; turnEnded = true }
+            "compressed" -> items += ChatItem.Notice(nextKey(),
+                "Compressed ${str(ev, "messages")} earlier messages into a summary - context freed.")
             "notice" -> items += ChatItem.Notice(nextKey(), str(ev, "text"))
-            "error" -> items += ChatItem.Notice(nextKey(), str(ev, "message"), error = true)
+            "error" -> { turnEnded = true; items += ChatItem.Notice(nextKey(), str(ev, "message"), error = true) }
         }
     }
 

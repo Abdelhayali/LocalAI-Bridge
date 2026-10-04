@@ -100,18 +100,43 @@ async def pick_model(requested: str | None) -> str:
 _ctx_cache = {"t": 0.0, "n": None}
 
 
+_CTX_KEYS = ("max_model_len", "context_length", "max_context_length", "context_size", "n_ctx", "max_seq_len")
+
+
+def _find_ctx(d) -> int | None:
+    if isinstance(d, dict):
+        for k in _CTX_KEYS:
+            if isinstance(d.get(k), int) and d[k] > 0:
+                return d[k]
+        for v in d.values():
+            if isinstance(v, (dict, list)) and (n := _find_ctx(v)):
+                return n
+    elif isinstance(d, list):
+        for v in d:
+            if n := _find_ctx(v):
+                return n
+    return None
+
+
 async def context_size() -> int | None:
-    """Model context window. llama.cpp exposes it at /props; other backends may not (None)."""
-    if time.time() - _ctx_cache["t"] < 60:
+    """Model context window. Set "context_size" in config.json to force it; otherwise it is detected from
+    /v1/models (vLLM, EXL3, LM Studio: max_model_len / context_length), llama.cpp /props,
+    TabbyAPI /v1/model (max_seq_len) or /health."""
+    if config.data.get("context_size"):
+        return int(config["context_size"])
+    if time.time() - _ctx_cache["t"] < (60 if _ctx_cache["n"] else 5):  # retry quickly after a failure
         return _ctx_cache["n"]
     n = None
-    try:
-        root = llm_api_base()[:-3]  # strip /v1
-        async with httpx.AsyncClient(timeout=4) as c:
-            d = (await c.get(root + "/props", headers=llm_headers())).json()
-        n = (d.get("default_generation_settings") or {}).get("n_ctx") or d.get("n_ctx")
-    except Exception:
-        pass
+    base = llm_api_base()
+    root = base[:-3]  # strip /v1
+    async with httpx.AsyncClient(timeout=4) as c:
+        for url in (base + "/models", root + "/props", base + "/model", root + "/health"):
+            try:
+                r = await c.get(url, headers=llm_headers())
+                if r.status_code == 200 and (n := _find_ctx(r.json())):
+                    break
+            except Exception:
+                continue
     _ctx_cache.update(t=time.time(), n=n)
     return n
 
@@ -143,11 +168,18 @@ def system_prompt() -> str:
 
 
 def build_llm_messages(session_id: str) -> list[dict]:
-    rows = db.get_messages(session_id)[-80:]
+    summ = db.get_summary(session_id)
+    rows = db.get_messages(session_id)
+    if summ:
+        rows = [r for r in rows if r["id"] > summ["upto_id"]]
+    rows = rows[-80:]
     while rows and rows[0]["role"] != "user":
         rows.pop(0)
     last_user_idx = max((i for i, r in enumerate(rows) if r["role"] == "user"), default=-1)
-    out = [{"role": "system", "content": system_prompt()}]
+    sp = system_prompt()
+    if summ:
+        sp += "\n\nSummary of the earlier part of this conversation (older messages were compressed):\n" + summ["summary"]
+    out = [{"role": "system", "content": sp}]
     for i, r in enumerate(rows):
         if r["role"] == "user":
             text = r["content"] or ""
@@ -182,12 +214,80 @@ def build_llm_messages(session_id: str) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------- conversation compression
+KEEP_USER_TURNS = 2  # the latest exchanges stay verbatim
+
+
+def _strip_think(t: str) -> str:
+    return re.sub(r"(?s)<think>.*?</think>", "", t or "").strip()
+
+
+async def compress_session(sid: str, model: str, client: httpx.AsyncClient) -> dict | None:
+    """Summarize everything except the last KEEP_USER_TURNS exchanges. Returns None if there is nothing to do."""
+    summ = db.get_summary(sid)
+    rows = db.get_messages(sid)
+    if summ:
+        rows = [r for r in rows if r["id"] > summ["upto_id"]]
+    user_idx = [i for i, r in enumerate(rows) if r["role"] == "user"]
+    if len(user_idx) <= KEEP_USER_TURNS:
+        return None
+    old = rows[:user_idx[-KEEP_USER_TURNS]]
+    lines = []
+    for r in old:
+        text = (r["content"] or "")[: (1500 if r["role"] == "tool" else 4000)]
+        if r["role"] == "assistant" and r["tool_calls"]:
+            text += "\n[called tools: " + ", ".join(
+                f"{t['function']['name']}({t['function']['arguments'][:300]})" for t in r["tool_calls"]) + "]"
+        if r["attachments"]:
+            text += "\n[attachments: " + ", ".join(a["filename"] for a in r["attachments"]) + "]"
+        lines.append(f"### {r['role'].upper()}{' (' + r['name'] + ')' if r.get('name') else ''}\n{text}")
+    transcript = "\n\n".join(lines)[-150_000:]
+    prompt = ((f"Existing summary of even earlier messages:\n{summ['summary']}\n\n" if summ else "") +
+              "Conversation to summarize:\n\n" + transcript + "\n\n"
+              "Write a compact but complete summary of everything above, to replace it in the assistant's memory. "
+              "Keep: the user's goals and preferences, decisions made, facts learned, file paths, commands, code "
+              "snippets that still matter, results of tools, and any unfinished tasks. Use short bullet points.")
+    r = await client.post(llm_api_base() + "/chat/completions", headers=llm_headers(), json={
+        "model": model, "stream": False, "max_tokens": 2048, "temperature": 0.2,
+        "messages": [{"role": "system", "content": "You compress chat histories into faithful summaries."},
+                     {"role": "user", "content": prompt}]})
+    r.raise_for_status()
+    msg = r.json()["choices"][0]["message"]
+    summary = _strip_think(msg.get("content") or "") or _strip_think(msg.get("reasoning_content") or "")
+    if not summary:
+        raise RuntimeError("The model returned an empty summary")
+    db.set_summary(sid, summary, old[-1]["id"])
+    st = db.get_stats(sid) or {}
+    st.update(ctx_used=None)  # unknown until the next reply; prevents compressing again immediately
+    db.set_stats(sid, st)
+    return {"messages": len(old), "summary_chars": len(summary)}
+
+
+async def compress_turn(run, model: str | None):
+    """Manual 'Compress now' as a background run (works through Cloudflare's 100 s request limit)."""
+    try:
+        model = await pick_model(model)
+        run.emit({"type": "phase", "phase": "compressing"})
+        async with httpx.AsyncClient(timeout=httpx.Timeout(900, connect=10)) as client:
+            res = await compress_session(run.sid, model, client)
+        run.emit({"type": "compressed", **res} if res else
+                 {"type": "notice", "text": "Nothing to compress yet - the conversation is still short."})
+        run.emit({"type": "done"})
+    except Exception as e:
+        run.emit({"type": "error", "message": f"Compression failed: {type(e).__name__}: {e}"})
+    finally:
+        runs.pop(run.sid, None)
+        for q in run.queues:
+            q.put_nowait(None)
+
+
 # ---------------------------------------------------------------- chat engine
 class Run:
     """A chat turn running in the background; survives phone disconnects."""
 
-    def __init__(self, sid, web=False, auto_approve=False):
+    def __init__(self, sid, web=False, auto_approve=False, compress_at=0.0):
         self.sid = sid
+        self.compress_at = compress_at
         self.web = web
         self.auto_approve = auto_approve
         self.queues: list[asyncio.Queue] = []
@@ -266,7 +366,7 @@ async def stream_completion(client, payload, run: Run):
         "prompt_tokens": usage.get("prompt_tokens") or timings.get("prompt_n"),
         "completion_tokens": usage.get("completion_tokens") or timings.get("predicted_n") or n_tok,
         "tps": round(timings["predicted_per_second"], 1) if timings.get("predicted_per_second")
-        else (round(n_tok / gen_time, 1) if gen_time > 0.5 else None),
+        else (round((usage.get("completion_tokens") or n_tok) / gen_time, 1) if gen_time > 0.5 else None),
         "prompt_tps": round(timings["prompt_per_second"], 1) if timings.get("prompt_per_second") else None,
         "seconds": round(time.time() - t_start, 1),
     }
@@ -281,6 +381,16 @@ async def chat_turn(run: Run, model: str | None):
         use_usage = True
         async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10)) as client:
             for _round in range(config["max_tool_rounds"]):
+                st = db.get_stats(sid) or {}
+                if run.compress_at and st.get("ctx_used") and st.get("ctx_size") \
+                        and st["ctx_used"] / st["ctx_size"] >= run.compress_at:
+                    run.emit({"type": "phase", "phase": "compressing"})
+                    try:
+                        res = await compress_session(sid, model, client)
+                        if res:
+                            run.emit({"type": "compressed", **res})
+                    except Exception as e:
+                        run.emit({"type": "notice", "text": f"Auto-compress failed: {e}"})
                 payload = {"model": model, "messages": build_llm_messages(sid), "stream": True}
                 if use_usage:
                     payload["stream_options"] = {"include_usage": True}
@@ -319,7 +429,7 @@ async def chat_turn(run: Run, model: str | None):
                         run.emit({"type": "approval_required", "id": tc["id"], "name": name, "args": args})
                         run.emit({"type": "phase", "phase": "approval", "name": name})
                         try:
-                            ok = await asyncio.wait_for(fut, 600)
+                            ok = await asyncio.wait_for(fut, 3600)
                         except asyncio.TimeoutError:
                             ok = False
                         finally:
@@ -430,6 +540,7 @@ class ChatIn(BaseModel):
     model: str | None = None
     web: bool = False            # give the model web_search / fetch_url
     auto_approve: bool = False   # run code / write files without asking the phone
+    compress_at: float = 0.0     # e.g. 0.75 = summarize old messages when 75% of the context is used; 0 = off
 
 
 class ApprovalIn(BaseModel):
@@ -454,7 +565,8 @@ async def sessions_get(sid: str):
         raise HTTPException(404)
     pending = [{"id": k, "name": v["name"], "args": v["args"]}
                for k, v in approvals.items() if v["session_id"] == sid]
-    return {**s, "stats": db.get_stats(sid),
+    summ = db.get_summary(sid)
+    return {**s, "stats": db.get_stats(sid), "summary_upto": summ["upto_id"] if summ else None,
             "running": sid in runs, "messages": db.get_messages(sid), "pending_approvals": pending}
 
 
@@ -488,10 +600,24 @@ async def chat(sid: str, body: ChatIn):
     model = body.model or s["model"] or None
     if body.model and body.model != s["model"]:
         db.update_session(sid, model=body.model)
-    run = Run(sid, web=body.web, auto_approve=body.auto_approve)
+    run = Run(sid, web=body.web, auto_approve=body.auto_approve, compress_at=max(0.0, min(body.compress_at, 0.98)))
     runs[sid] = run
     resp = sse_response(run)
     run.task = asyncio.create_task(chat_turn(run, model))
+    return resp
+
+
+@app.post("/api/sessions/{sid}/compress", dependencies=[Auth])
+async def compress(sid: str):
+    s = db.get_session(sid)
+    if not s:
+        raise HTTPException(404)
+    if sid in runs:
+        raise HTTPException(409, "A reply is already running in this session")
+    run = Run(sid)
+    runs[sid] = run
+    resp = sse_response(run)
+    run.task = asyncio.create_task(compress_turn(run, s["model"] or None))
     return resp
 
 

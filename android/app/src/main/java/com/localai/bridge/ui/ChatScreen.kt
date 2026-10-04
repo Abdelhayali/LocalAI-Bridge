@@ -1,5 +1,6 @@
 package com.localai.bridge.ui
 
+import androidx.compose.material.icons.filled.Compress
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -248,6 +249,9 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                                 if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) launchCamera()
                                 else camPermission.launch(Manifest.permission.CAMERA)
                             })
+                        DropdownMenuItem(text = { Text("Compress conversation now") }, leadingIcon = { Icon(Icons.Default.Compress, null) },
+                            enabled = !vm.streaming && vm.currentSessionId != null,
+                            onClick = { attachMenu = false; vm.compressNow() })
                         HorizontalDivider()
                         DropdownMenuItem(text = { Text("Web search") }, leadingIcon = { Icon(Icons.Default.Public, null) },
                             trailingIcon = { Switch(checked = vm.webSearch, onCheckedChange = null) },
@@ -339,6 +343,7 @@ private fun LiveStatus(vm: MainViewModel) {
         "tool_args" -> "Preparing a tool call… ${vm.liveTokens} tokens$speed"
         "tool" -> "Running ${vm.phaseTool.replace('_', ' ')}…"
         "approval" -> "Waiting for your approval"
+        "compressing" -> "Compressing the conversation…"
         else -> "Working…"
     }
     Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {

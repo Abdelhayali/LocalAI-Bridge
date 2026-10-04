@@ -63,6 +63,7 @@ data class SessionDetail(
     val messages: List<MessageDto> = emptyList(),
     @SerialName("pending_approvals") val pendingApprovals: List<PendingApproval> = emptyList(),
     val stats: SessionStats? = null,
+    @SerialName("summary_upto") val summaryUpto: Long? = null,   // messages up to this id were compressed
 )
 
 @Serializable

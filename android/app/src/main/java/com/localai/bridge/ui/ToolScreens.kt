@@ -1,5 +1,6 @@
 package com.localai.bridge.ui
 
+import androidx.compose.material3.Slider
 import android.content.Context
 import android.content.Intent
 import android.webkit.MimeTypeMap
@@ -367,6 +368,22 @@ fun SettingsScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                 Switch(checked = vm.autoApprove, onCheckedChange = { on ->
                     if (on) confirmAuto = true else vm.updateAutoApprove(false)
                 })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Auto-compress long chats")
+                    Text("When the context fills up, older messages are summarized so the chat can go on. " +
+                        "You still see the full history.", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = vm.autoCompress, onCheckedChange = { vm.updateAutoCompress(it) })
+            }
+            if (vm.autoCompress) {
+                var pct by remember { mutableStateOf(vm.compressAt.toFloat()) }
+                Text("Compress at ${pct.toInt()}% of the context", style = MaterialTheme.typography.bodyMedium)
+                Slider(value = pct, onValueChange = { pct = it }, valueRange = 50f..95f, steps = 8,
+                    onValueChangeFinished = { vm.updateCompressAt(pct.toInt()) })
+                Text("You can also compress any chat by hand: 📎 → Compress conversation now.",
+                    style = MaterialTheme.typography.bodySmall)
             }
             HorizontalDivider()
             Text("Appearance", style = MaterialTheme.typography.titleMedium)

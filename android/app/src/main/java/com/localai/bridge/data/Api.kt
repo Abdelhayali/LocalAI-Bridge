@@ -102,10 +102,11 @@ class Api(private val baseUrl: String, private val token: String) {
     // ---- streaming chat (Server-Sent Events)
     fun chat(
         sessionId: String, content: String, attachments: List<String>, model: String?,
-        web: Boolean = false, autoApprove: Boolean = false,
+        web: Boolean = false, autoApprove: Boolean = false, compressAt: Double = 0.0,
     ): Flow<JsonObject> {
         val body = buildJsonObject {
             put("content", content)
+            put("compress_at", compressAt)
             put("web", web)
             put("auto_approve", autoApprove)
             putJsonArray("attachments") { attachments.forEach { add(it) } }
@@ -113,6 +114,10 @@ class Api(private val baseUrl: String, private val token: String) {
         }
         return sse(req("/api/sessions/$sessionId/chat").post(body.toString().toRequestBody(jsonType)).build())
     }
+
+    /** Summarize the older part of the conversation (runs on the PC, progress streamed like a reply). */
+    fun compress(sessionId: String): Flow<JsonObject> =
+        sse(req("/api/sessions/$sessionId/compress").post("{}".toRequestBody(jsonType)).build())
 
     fun resume(sessionId: String): Flow<JsonObject> = sse(req("/api/sessions/$sessionId/stream").get().build())
 

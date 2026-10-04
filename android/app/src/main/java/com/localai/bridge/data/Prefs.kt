@@ -39,6 +39,16 @@ class Prefs(context: Context) {
         get() = prefs.getBoolean("auto_approve", false)
         set(v) = prefs.edit().putBoolean("auto_approve", v).apply()
 
+    /** Summarize old messages automatically when the context gets full. */
+    var autoCompress: Boolean
+        get() = prefs.getBoolean("auto_compress", true)
+        set(v) = prefs.edit().putBoolean("auto_compress", v).apply()
+
+    /** Context usage (percent) that triggers auto-compression. */
+    var compressAt: Int
+        get() = prefs.getInt("compress_at", 75)
+        set(v) = prefs.edit().putInt("compress_at", v).apply()
+
     val isPaired get() = serverUrl.isNotBlank() && token.isNotBlank()
 
     fun clear() = prefs.edit().clear().apply()
