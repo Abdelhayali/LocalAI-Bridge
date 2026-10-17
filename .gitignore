@@ -12,3 +12,6 @@ android/.idea/
 *.apk
 !release/*.apk
 android/.kotlin/
+desktop/dist/
+gui-screenshot.png
+*.log

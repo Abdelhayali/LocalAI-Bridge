@@ -72,6 +72,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.EventNote
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Drafts
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Screenshot
@@ -164,6 +168,7 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                     }
                 }
             }
+            PcStatusBar(vm.pcStatus, onClick = { vm.screen = Screen.MODELS })
             if (vm.loadingSession) LinearProgressIndicator(Modifier.fillMaxWidth())
             vm.stats?.let { Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp)) { StatsLine(it) } }
             if (vm.backgroundTaskCount > 0) {
@@ -187,9 +192,12 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                     items(vm.items, key = { it.key }) { item ->
                         when (item) {
                             is ChatItem.User -> UserBubble(vm, item)
-                            is ChatItem.Assistant -> AssistantBubble(vm, item,
-                                isLast = item === vm.items.lastOrNull { it is ChatItem.Assistant } &&
-                                    vm.items.last() !is ChatItem.User)
+                            is ChatItem.Assistant -> {
+                                val last = item === vm.items.lastOrNull { it is ChatItem.Assistant } && vm.items.last() !is ChatItem.User
+                                AssistantBubble(vm, item, isLast = last)
+                                if (last && item === vm.items.last() && !vm.streaming && vm.questions.isEmpty())
+                                    QuickReplies(remember(item.text) { suggestedReplies(item.text) }, vm)
+                            }
                             is ChatItem.Tool -> ToolCard(vm, item)
                             is ChatItem.Notice -> Text(item.text, style = MaterialTheme.typography.bodySmall,
                                 color = if (item.error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -214,6 +222,12 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                 }
             }
 
+            // ---- the model asks the user to choose (ask_user): reply paused until a choice is tapped
+            vm.questions.firstOrNull()?.let { QuestionCard(it, vm) }
+
+            // ---- step list: the model's plan, or the actions it is taking on the PC
+            ActivityCard(vm)
+
             // ---- live status while the PC is working
             if (vm.streaming) LiveStatus(vm)
 
@@ -230,8 +244,14 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
             }
 
             // ---- active modes (tap to turn off) - kept out of the input row so the text field stays wide
-            if (vm.webSearch || vm.autoApprove) {
+            if (vm.webSearch || vm.autoApprove || vm.emailAccess || vm.organizerAccess) {
                 Row(Modifier.padding(start = 12.dp, top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (vm.emailAccess) InputChip(selected = true, onClick = { vm.toggleEmailAccess() },
+                        label = { Text("Email") }, leadingIcon = { Icon(Icons.Default.Email, null, Modifier.size(16.dp)) },
+                        trailingIcon = { Icon(Icons.Default.Close, "Turn off", Modifier.size(14.dp)) })
+                    if (vm.organizerAccess) InputChip(selected = true, onClick = { vm.toggleOrganizerAccess() },
+                        label = { Text("Tasks") }, leadingIcon = { Icon(Icons.Default.EventNote, null, Modifier.size(16.dp)) },
+                        trailingIcon = { Icon(Icons.Default.Close, "Turn off", Modifier.size(14.dp)) })
                     if (vm.webSearch) InputChip(selected = true, onClick = { vm.toggleWebSearch() },
                         label = { Text("Web search") },
                         leadingIcon = { Icon(Icons.Default.Public, null, Modifier.size(16.dp)) },
@@ -269,6 +289,12 @@ fun ChatScreen(vm: MainViewModel, openDrawer: () -> Unit) {
                         DropdownMenuItem(text = { Text("Web search") }, leadingIcon = { Icon(Icons.Default.Public, null) },
                             trailingIcon = { Switch(checked = vm.webSearch, onCheckedChange = null) },
                             onClick = { vm.toggleWebSearch() })
+                        DropdownMenuItem(text = { Text("Email access") }, leadingIcon = { Icon(Icons.Default.Email, null) },
+                            trailingIcon = { Switch(checked = vm.emailAccess, onCheckedChange = null) },
+                            onClick = { vm.toggleEmailAccess() })
+                        DropdownMenuItem(text = { Text("Tasks & calendar access") }, leadingIcon = { Icon(Icons.Default.EventNote, null) },
+                            trailingIcon = { Switch(checked = vm.organizerAccess, onCheckedChange = null) },
+                            onClick = { vm.toggleOrganizerAccess() })
                         DropdownMenuItem(text = { Text("Auto-approve") }, leadingIcon = { Icon(Icons.Default.Bolt, null) },
                             trailingIcon = { Switch(checked = vm.autoApprove, onCheckedChange = null) },
                             onClick = {
@@ -354,8 +380,10 @@ private fun LiveStatus(vm: MainViewModel) {
         "thinking" -> "Thinking… ${vm.liveTokens} tokens$speed"
         "writing" -> "Writing… ${vm.liveTokens} tokens$speed"
         "tool_args" -> "Preparing a tool call… ${vm.liveTokens} tokens$speed"
-        "tool" -> "Running ${vm.phaseTool.replace('_', ' ')}…"
+        "tool" -> "Now: " + (vm.items.lastOrNull { it is ChatItem.Tool && it.status == "running" }
+            ?.let { toolSummary((it as ChatItem.Tool).name, it.args) } ?: vm.phaseTool.replace('_', ' '))
         "approval" -> "Waiting for your approval"
+        "question" -> "Waiting for your choice (see the options below)"
         "compressing" -> "Compressing the conversation…"
         else -> "Working…"
     }
@@ -377,7 +405,7 @@ private fun LiveStatus(vm: MainViewModel) {
 }
 
 /** llama.cpp reports models as full file paths; show just the file name. */
-private fun shortModel(m: String) = m.substringAfterLast('\\').substringAfterLast('/')
+internal fun shortModel(m: String) = m.substringAfterLast('\\').substringAfterLast('/')
 
 @Composable
 private fun EmptyChat() {
@@ -435,6 +463,9 @@ private fun AssistantBubble(vm: MainViewModel, item: ChatItem.Assistant, isLast:
     val (thinkInline, visible) = splitThink(item.text)
     val reasoning = (item.reasoning + thinkInline).trim()
     var showReasoning by remember { mutableStateOf(false) }
+    var draftOpen by remember { mutableStateOf(false) }
+    val emailId = remember(vm.items.size) { emailIdOfChat(vm.items) }
+    if (draftOpen) SaveDraftDialog(vm, visible.trim(), emailId) { draftOpen = false }
     Column(Modifier.fillMaxWidth().animateContentSize()) {
         if (reasoning.isNotEmpty()) {
             AssistChip(onClick = { showReasoning = !showReasoning },
@@ -450,6 +481,11 @@ private fun AssistantBubble(vm: MainViewModel, item: ChatItem.Assistant, isLast:
                 SmallAction(Icons.Default.ContentCopy, "Copy") {
                     clip.setText(AnnotatedString(visible.trim())); vm.toast = "Copied"
                 }
+                if (looksLikeEmail(visible, emailId)) SmallAction(Icons.Default.Drafts, "Save as Gmail draft") { draftOpen = true }
+                val reading = vm.speakingKey == item.key
+                SmallAction(if (reading) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp, if (reading) "Stop reading" else "Read aloud") {
+                    vm.toggleSpeak(item.key, visible)
+                }
                 if (isLast && !vm.streaming) SmallAction(Icons.Default.Refresh, "Regenerate") { vm.regenerate() }
             }
         }
@@ -458,7 +494,22 @@ private fun AssistantBubble(vm: MainViewModel, item: ChatItem.Assistant, isLast:
 
 private fun argText(args: JsonObject, k: String) = (args[k] as? JsonPrimitive)?.contentOrNull.orEmpty()
 
-private fun toolSummary(name: String, args: JsonObject): String = when (name) {
+internal fun toolSummary(name: String, args: JsonObject): String = when (name) {
+    "ask_user" -> "Ask you: ${argText(args, "question")}"
+    "tasks_list" -> "Look at your tasks"
+    "tasks_add" -> "Add task: ${argText(args, "title")}"
+    "tasks_update" -> "Update task #${argText(args, "id")}"
+    "notes_add" -> "Save note: ${argText(args, "title")}"
+    "notes_search" -> "Search notes: ${argText(args, "query")}"
+    "calendar_list" -> "Check calendar ${argText(args, "start")}"
+    "calendar_add" -> "Add event: ${argText(args, "title")} ${argText(args, "start")}"
+    "gmail_list" -> "Check email: ${argText(args, "query").ifBlank { "inbox" }}"
+    "gmail_read" -> "Read an email"
+    "gmail_draft" -> "Write a draft email"
+    "gmail_send" -> "Send email to ${argText(args, "to").ifBlank { "the sender" }}"
+    "gmail_send_draft" -> "Send the draft"
+    "google_calendar_add" -> "Add to Google Calendar: ${argText(args, "title")}"
+    "update_tasks" -> "Update the plan"
     "run_code" -> "Run ${argText(args, "language")}"
     "list_dir" -> "List ${argText(args, "path")}"
     "read_file" -> "Read ${argText(args, "path")}"
@@ -495,7 +546,7 @@ private fun ToolCard(vm: MainViewModel, item: ChatItem.Tool) {
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 when (item.status) {
                     "running" -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                    "awaiting" -> Text("needs approval", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                    "awaiting" -> Text(if (item.name == "ask_user") "waiting for your choice" else "needs approval", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
                     else -> Text(if (open) "hide" else "details", style = MaterialTheme.typography.labelSmall)
                 }
             }
@@ -517,10 +568,24 @@ private fun ToolCard(vm: MainViewModel, item: ChatItem.Tool) {
 
 @Composable
 private fun ApprovalDialog(p: PendingApproval, vm: MainViewModel) {
-    val code = argText(p.args, "code").ifBlank { argText(p.args, "content") }
+    val code = when (p.name) {
+        "gmail_send" -> "To: ${argText(p.args, "to").ifBlank { "(reply to the original sender)" }}\n" +
+            "Subject: ${argText(p.args, "subject").ifBlank { "(Re: original subject)" }}\n\n${argText(p.args, "body")}"
+        "gmail_send_draft" -> "Draft id: ${argText(p.args, "draft_id")}\n(the draft the AI showed you in the chat)"
+        "google_calendar_add" -> "${argText(p.args, "title")}\n${argText(p.args, "start")}" +
+            argText(p.args, "end").let { if (it.isBlank()) "" else " → $it" } +
+            argText(p.args, "location").let { if (it.isBlank()) "" else "\n@ $it" } +
+            argText(p.args, "description").let { if (it.isBlank()) "" else "\n\n$it" }
+        else -> argText(p.args, "code").ifBlank { argText(p.args, "content") }
+    }
     AlertDialog(
         onDismissRequest = {},
-        title = { Text(if (p.name == "run_code") "Run code on your PC?" else "Write file on your PC?") },
+        title = { Text(when (p.name) {
+            "run_code" -> "Run code on your PC?"
+            "gmail_send", "gmail_send_draft" -> "Send this email?"
+            "google_calendar_add" -> "Add to Google Calendar?"
+            else -> "Write file on your PC?"
+        }) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(toolSummary(p.name, p.args), style = MaterialTheme.typography.labelLarge)

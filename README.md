@@ -1,11 +1,17 @@
 # LocalAI Bridge
 
-**Use the AI model running on your Windows PC from your Android phone, from anywhere.**
+**Use the AI model running on your Windows PC from your Android phone or your Windows laptop, from anywhere: a personal
+assistant with memory, notes, tasks, calendar and email.**
 
 LocalAI Bridge connects an Android app to a local LLM (llama.cpp, Ollama, LM Studio...) through an
 encrypted Cloudflare tunnel. No port forwarding and no cloud AI: your model, your PC, your data.
 The assistant can **run code on the PC, browse and read your folders, read PDFs and images, take
-screenshots, draw charts, and remember things across chats**.
+screenshots, draw charts, and remember things across chats**. New in 1.2: a **Windows desktop app**, strong
+**multilingual memory**, **notes / tasks / calendar**, **Gmail + Google Calendar**, **tasks from email**, an
+**OpenAI-compatible API key**, **read-aloud in Arabic and English**, choice buttons and a live step list.
+
+**Downloads:** [`release/LocalAI-Bridge.apk`](release/LocalAI-Bridge.apk) (Android 8+) ·
+[`desktop/release/LocalAI-Bridge-Desktop.exe`](desktop/release/LocalAI-Bridge-Desktop.exe) (Windows 10/11, one file, no install)
 
 <p align="center">
   <img src="docs/images/app-chat.jpg" width="200" alt="Chat">
@@ -38,7 +44,16 @@ Android app ──HTTPS──► Cloudflare tunnel ──► LocalAI Bridge serv
 | 📊 **Live status & stats** | See what the PC is doing (reading, thinking, writing, running a tool) with tokens, speed and a timer. Each chat shows context used / available and tokens per second |
 | ⚡ **Auto-approve** | Optional: let the AI run code and write files without asking (Settings, with a warning) |
 | 🤖 **Code agent (beta)** | [OpenCode](https://opencode.ai) works on any project folder of your PC with your local model: reads code, edits files, runs commands. Every edit and command asks for approval (or per-session auto-approve) |
-| 🧠 **Memory** | The AI saves facts about you that carry across all chats. View, add or delete them in the app |
+| 🧠 **Strong memory** | mem0-style: after each reply the AI keeps lasting facts about you and updates or removes ones that changed. Recall **by meaning in Arabic and English** (free `multilingual-e5-large` embeddings on the CPU); every chat gets the memories related to your message; the AI can search earlier chats. Memory screen with search, categories, edit, auto-remember switch |
+| 📝 **Notes, tasks & calendar** | Stored on the PC and used by the AI ("what tasks do I have?", "remind me…", "what's tomorrow?"). Tasks with descriptions, date and time pickers |
+| 📧 **Gmail + Google Calendar** | Optional, with your own Google OAuth client. Folders incl. Sent, search, load more; explain an email, AI draft replies, save / edit / AI-edit / send drafts. **Sending and adding Google events always ask you first** |
+| 📬 **Tasks from email** | The AI reads every email of a period and suggests tasks and emails that need your reply; Add to my tasks or Dismiss; a reply task opens an AI draft |
+| 🔒 **Access switches** | Email access and Tasks & calendar access are **off by default**; when off the AI gets no such tools and the server refuses them |
+| 🔑 **OpenAI API anywhere** | An OpenAI-format URL + API key (made and refreshed in the app) for your PC's model, usable from any app or script |
+| ❓ **Choices & steps** | The AI asks with buttons when it needs a decision; tap-to-answer chips for listed options; a live list of every action it takes on the PC |
+| 🔊 **Read aloud** | Replies spoken in Arabic and English (language detected per sentence), per reply or automatic |
+| 💻 **Windows desktop app** | All of the above on a laptop screen: chats left, conversation middle, live steps right; drag & drop and paste images. Connects to the server on the same PC with one click, or with the pairing code from `http://127.0.0.1:8765/pair` |
+| 🧩 **Models** | Model control from the app (load / switch / unload) is **not supported in this version**: load the model in your LLM server. The [V100-LLM edition](https://github.com/Abdelhayali/V100-LLM) has it |
 | 🌗 **Themes** | Light, dark or follow the system |
 | 🔒 **Security** | 256-bit token, HTTPS tunnel, server only listens on localhost, approval for code and file writes |
 
