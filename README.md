@@ -19,6 +19,7 @@ screenshots, draw charts, and remember things across chats**. New in 1.2: a **Wi
   <img src="docs/images/app-screenshot-tool.jpg" width="200" alt="PC screenshot shown in chat">
   <img src="docs/images/app-approval.jpg" width="200" alt="Approve code before it runs">
 </p>
+<p align="center"><img src="docs/images/desktop-app.png" width="860" alt="LocalAI Bridge Desktop on Windows"><br><i>LocalAI Bridge Desktop (Windows app)</i></p>
 <p align="center"><img src="docs/images/server-control-panel.png" width="700" alt="Windows control panel"></p>
 
 ```
