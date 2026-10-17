@@ -99,6 +99,10 @@ class Api(private val baseUrl: String, private val token: String) {
         send<JsonObject>("POST", "/api/approvals/$callId", buildJsonObject { put("approve", ok) })
     }
 
+    suspend fun answerQuestion(callId: String, answer: String) {
+        send<JsonObject>("POST", "/api/questions/$callId", buildJsonObject { put("answer", answer) })
+    }
+
     // ---- raw helpers (used by feature extensions such as the beta agent API)
     suspend fun rawGet(path: String, query: Map<String, String> = emptyMap()): String = exec(req(path, query).get().build())
     suspend fun rawSend(method: String, path: String, body: JsonObject?): String =
@@ -109,12 +113,15 @@ class Api(private val baseUrl: String, private val token: String) {
     fun chat(
         sessionId: String, content: String, attachments: List<String>, model: String?,
         web: Boolean = false, autoApprove: Boolean = false, compressAt: Double = 0.0,
+        email: Boolean = false, organizer: Boolean = false,
     ): Flow<JsonObject> {
         val body = buildJsonObject {
             put("content", content)
             put("compress_at", compressAt)
             put("web", web)
             put("auto_approve", autoApprove)
+            put("email", email)
+            put("organizer", organizer)
             putJsonArray("attachments") { attachments.forEach { add(it) } }
             if (!model.isNullOrBlank()) put("model", model)
         }

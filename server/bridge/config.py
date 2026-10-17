@@ -22,6 +22,7 @@ def _defaults() -> dict:
         "host": "127.0.0.1",          # keep on localhost; cloudflared reaches it locally
         "port": 8765,
         "llm_base_url": "http://127.0.0.1:8080",  # llama.cpp server (no API key). "/v1" is added automatically
+        "openai_key": "",                         # key for <url>/openai/v1 (made / refreshed in the phone app; empty = off)
         "default_model": "",
         "auth_token": secrets.token_urlsafe(32),
         "allowed_roots": [home, str(SERVER_DIR.parent / "workspace")],

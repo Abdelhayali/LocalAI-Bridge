@@ -32,6 +32,10 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -176,26 +180,31 @@ fun MainShell(vm: MainViewModel) {
                             if (dark) "Light mode" else "Dark mode")
                     }
                 }
+                PcStatusBar(vm.pcStatus, onClick = { go(Screen.MODELS) }, modifier = Modifier.padding(bottom = 8.dp))
                 Button(onClick = { vm.newChat(); scope.launch { drawer.close() } }, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.Add, null); Spacer(Modifier.size(6.dp)); Text("New chat")
                 }
                 Spacer(Modifier.height(8.dp))
-                NavigationDrawerItem(
-                    label = { Text("Running tasks" + if (vm.backgroundTaskCount > 0) "  (${vm.backgroundTaskCount})" else "") },
-                    icon = { Icon(Icons.Default.Memory, null) },
-                    selected = vm.screen == Screen.TASKS, onClick = { go(Screen.TASKS) })
-                NavigationDrawerItem(label = { Text("Code agent (beta)") }, icon = { Icon(Icons.Default.Code, null) },
-                    selected = vm.screen == Screen.AGENT, onClick = { go(Screen.AGENT) })
-                NavigationDrawerItem(label = { Text("Files on PC") }, icon = { Icon(Icons.Default.Folder, null) },
-                    selected = vm.screen == Screen.FILES, onClick = { go(Screen.FILES) })
-                NavigationDrawerItem(label = { Text("Terminal") }, icon = { Icon(Icons.Default.Terminal, null) },
-                    selected = vm.screen == Screen.TERMINAL, onClick = { go(Screen.TERMINAL) })
-                NavigationDrawerItem(label = { Text("Memory") }, icon = { Icon(Icons.Default.Memory, null) },
-                    selected = vm.screen == Screen.MEMORY, onClick = { go(Screen.MEMORY) })
-                NavigationDrawerItem(label = { Text("Settings") }, icon = { Icon(Icons.Default.Settings, null) },
-                    selected = vm.screen == Screen.SETTINGS, onClick = { go(Screen.SETTINGS) })
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                Text("Sessions", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(8.dp))
+                // compact 3-row grid instead of 9 full-width rows, so the session list below has room
+                val tiles = listOf(
+                    Triple(Screen.ORGANIZER, "Notes &\ntasks", Icons.Default.EventNote),
+                    Triple(Screen.MODELS, "Models", Icons.Default.Storage),
+                    Triple(Screen.TASKS, "Running" + if (vm.backgroundTaskCount > 0) " (${vm.backgroundTaskCount})" else "", Icons.Default.Memory),
+                    Triple(Screen.API, "API key", Icons.Default.Key),
+                    Triple(Screen.AGENT, "Code\nagent", Icons.Default.Code),
+                    Triple(Screen.FILES, "Files", Icons.Default.Folder),
+                    Triple(Screen.TERMINAL, "Terminal", Icons.Default.Terminal),
+                    Triple(Screen.MEMORY, "Memory", Icons.Default.Psychology),
+                    Triple(Screen.SETTINGS, "Settings", Icons.Default.Settings),
+                )
+                tiles.chunked(5).forEach { row ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        row.forEach { (s, label, icon) -> DrawerTile(label, icon, vm.screen == s, Modifier.weight(1f)) { go(s) } }
+                        repeat(5 - row.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
+                HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                Text("Sessions (${vm.sessions.size})", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                 LazyColumn(Modifier.weight(1f)) {
                     items(vm.sessions, key = { it.id }) { s ->
                         Row(
@@ -222,10 +231,13 @@ fun MainShell(vm: MainViewModel) {
             Screen.CHAT -> ChatScreen(vm, openDrawer)
             Screen.FILES -> FilesScreen(vm, openDrawer)
             Screen.TERMINAL -> TerminalScreen(vm, openDrawer)
-            Screen.MEMORY -> MemoryScreen(vm, openDrawer)
+            Screen.MEMORY -> MemoryScreen2(vm, openDrawer)
             Screen.SETTINGS -> SettingsScreen(vm, openDrawer)
             Screen.TASKS -> TasksScreen(vm, openDrawer)
             Screen.AGENT -> AgentScreen(vm, openDrawer)
+            Screen.MODELS -> ModelsScreen(vm, openDrawer)
+            Screen.API -> ApiScreen(vm, openDrawer)
+            Screen.ORGANIZER -> OrganizerScreen(vm, openDrawer)
         }
     }
 
@@ -241,5 +253,19 @@ fun MainShell(vm: MainViewModel) {
             text = { Text("This removes the conversation from the PC.") },
             confirmButton = { TextButton(onClick = { vm.deleteSession(id); confirmDelete = null }) { Text("Delete") } },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } })
+    }
+}
+
+/** One square menu entry: icon over a short label, highlighted when its screen is open. */
+@Composable
+private fun DrawerTile(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, selected: Boolean,
+                       modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Surface(onClick = onClick, shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp), modifier = modifier,
+        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else androidx.compose.ui.graphics.Color.Transparent) {
+        Column(Modifier.padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, null, Modifier.size(22.dp))
+            Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 2, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                lineHeight = androidx.compose.ui.unit.TextUnit(12f, androidx.compose.ui.unit.TextUnitType.Sp))
+        }
     }
 }

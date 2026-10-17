@@ -43,6 +43,20 @@ data class MessageDto(
 @Serializable
 data class PendingApproval(val id: String, val name: String, val args: JsonObject = JsonObject(emptyMap()))
 
+/** One step of the model's plan (update_tasks tool): pending | in_progress | done. */
+@Serializable
+data class PlanStep(val title: String = "", val status: String = "pending")
+
+/** The model asked the user to choose (ask_user tool); the reply on the PC waits for the answer. */
+@Serializable
+data class PendingQuestion(
+    val id: String,
+    val question: String = "",
+    val options: List<String> = emptyList(),
+    val multiple: Boolean = false,
+    @SerialName("allow_other") val allowOther: Boolean = true,
+)
+
 @Serializable
 data class SessionStats(
     @SerialName("prompt_tokens") val promptTokens: Long? = null,
@@ -62,6 +76,8 @@ data class SessionDetail(
     val running: Boolean = false,
     val messages: List<MessageDto> = emptyList(),
     @SerialName("pending_approvals") val pendingApprovals: List<PendingApproval> = emptyList(),
+    @SerialName("pending_questions") val pendingQuestions: List<PendingQuestion> = emptyList(),
+    val plan: List<PlanStep> = emptyList(),
     val stats: SessionStats? = null,
     @SerialName("summary_upto") val summaryUpto: Long? = null,   // messages up to this id were compressed
 )
@@ -102,7 +118,16 @@ data class ExecResult(
 )
 
 @Serializable
-data class MemoryDto(val id: Long, val content: String, val created: Double = 0.0)
+data class MemoryDto(
+    val id: Long, val content: String, val created: Double = 0.0, val category: String? = "other",
+    val source: String? = "manual", val updated: Double? = null, val score: Double? = null,
+)
+
+@Serializable
+data class MemoryStatus(
+    val model: String = "", val ready: Boolean = false, val loading: Boolean = false, val error: String = "",
+    val count: Int = 0, val embedded: Int = 0, @SerialName("auto_memory") val autoMemory: Boolean = true,
+)
 
 @Serializable
 data class TaskRun(
@@ -114,6 +139,7 @@ data class TaskRun(
     val tps: Double? = null,
     val elapsed: Long = 0,
     @SerialName("waiting_approval") val waitingApproval: Boolean = false,
+    @SerialName("waiting_question") val waitingQuestion: Boolean = false,
 )
 
 @Serializable

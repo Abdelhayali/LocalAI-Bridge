@@ -1,5 +1,7 @@
 package com.localai.bridge.ui
 
+import com.localai.bridge.data.v100Status
+
 import android.app.Application
 import android.net.Uri
 import androidx.compose.runtime.getValue
@@ -26,7 +28,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-enum class Screen { CHAT, FILES, TERMINAL, MEMORY, SETTINGS, TASKS, AGENT }
+enum class Screen { CHAT, FILES, TERMINAL, MEMORY, SETTINGS, TASKS, AGENT, MODELS, API, ORGANIZER }
 
 sealed interface ChatItem {
     val key: String
@@ -63,6 +65,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var streaming by mutableStateOf(false)
     var loadingSession by mutableStateOf(false)
     val approvals = mutableStateListOf<PendingApproval>()
+    val questions = mutableStateListOf<com.localai.bridge.data.PendingQuestion>()   // ask_user choices waiting on the phone
+    val plan = mutableStateListOf<com.localai.bridge.data.PlanStep>()               // the model's own step list (update_tasks)
 
     val pendingAttachments = mutableStateListOf<AttachmentRef>()
     var uploading by mutableStateOf(false)
@@ -70,15 +74,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var editingMessageId by mutableStateOf<Long?>(null)
     var themeMode by mutableStateOf(prefs.themeMode)   // system | light | dark
     var webSearch by mutableStateOf(prefs.webSearch)   // give the model internet search
+    var emailAccess by mutableStateOf(prefs.emailAccess)          // Gmail tools in chats (off by default)
+    var organizerAccess by mutableStateOf(prefs.organizerAccess)  // tasks / notes / calendar tools (off by default)
+    // one request may get access it needs (an "Ask the AI" button the user tapped), without changing the switches
+    private var onceEmail = false
+    private var onceOrganizer = false
+    fun sendWithAccess(email: Boolean, organizer: Boolean) { onceEmail = email; onceOrganizer = organizer; send() }
+    fun toggleEmailAccess() { emailAccess = !emailAccess; prefs.emailAccess = emailAccess
+        toast = if (emailAccess) "Email access ON: the AI can read your mail and write drafts (sending asks you)" else "Email access OFF" }
+    fun toggleOrganizerAccess() { organizerAccess = !organizerAccess; prefs.organizerAccess = organizerAccess
+        toast = if (organizerAccess) "Tasks & calendar access ON" else "Tasks & calendar access OFF" }
     var autoApprove by mutableStateOf(prefs.autoApprove)   // run code / write files without asking
     var autoCompress by mutableStateOf(prefs.autoCompress)
     var compressAt by mutableStateOf(prefs.compressAt)       // percent of the context
+    // read replies aloud (phone TTS, Arabic + English)
+    val speaker = com.localai.bridge.data.Speaker(app).also { s ->
+        s.rate = prefs.speechRate
+        s.onState = { on -> speaking = on; if (!on) speakingKey = null }
+        s.onMissingVoice = { lang -> toast = "No $lang voice on this phone: install it in Android Settings > Text-to-speech" }
+    }
+    var speaking by mutableStateOf(false)
+    var speakingKey by mutableStateOf<String?>(null)
+    var autoRead by mutableStateOf(prefs.autoRead)
+    var speechRate by mutableStateOf(prefs.speechRate)
     private var turnEnded = false                            // got "done" or "error" (vs. connection dropped)
     private var reconnectJob: Job? = null
 
     // what the PC is doing (Running tasks screen + indicator); polled while the app is open
     var tasks by mutableStateOf<com.localai.bridge.data.TasksDto?>(null)
     private var tasksJob: Job? = null
+    // PC status from the V100-LLM launcher (loaded model, VRAM, GPU load, CPU, RAM), polled while the app is open
+    var pcStatus by mutableStateOf<com.localai.bridge.data.V100Status?>(null)
+    private var pcJob: Job? = null
     private var turnCompleted = false
 
     // live status of a running reply (shown above the input while streaming)
@@ -171,7 +198,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         currentTitle = "New chat"
         currentModel = info?.defaultModel.orEmpty()
         stats = null
-        items.clear(); approvals.clear()
+        items.clear(); approvals.clear(); questions.clear(); plan.clear()
         screen = Screen.CHAT
     }
 
@@ -190,6 +217,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             prefs.lastSession = s.id
             items.clear(); items.addAll(toItems(s.messages, s.summaryUpto))
             approvals.clear(); approvals.addAll(s.pendingApprovals)
+        questions.clear(); questions.addAll(s.pendingQuestions)
+        plan.clear(); plan.addAll(s.plan)
+            questions.clear(); questions.addAll(s.pendingQuestions)
+        plan.clear(); plan.addAll(s.plan)
+            plan.clear(); plan.addAll(s.plan)
             if (s.running) {
                 // the reply is still generating on the PC: re-attach to its stream
                 trimToLastUser()
@@ -271,6 +303,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         draft = ""
         pendingAttachments.clear()
         editingMessageId = null
+        plan.clear()   // a new request gets a new plan
         if (editId != null) {
             val idx = items.indexOfFirst { it is ChatItem.User && it.messageId == editId }
             if (idx >= 0) while (items.size > idx) items.removeAt(items.size - 1)
@@ -293,8 +326,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     sessions.add(0, com.localai.bridge.data.SessionDto(sid, title, currentModel, running = true))
                     currentTitle = title
                 }
+                val em = emailAccess || onceEmail
+                val org = organizerAccess || onceOrganizer
+                onceEmail = false; onceOrganizer = false
                 consume(a.chat(sid, text, atts.map { it.id }, currentModel.ifBlank { null }, webSearch, autoApprove,
-                    if (autoCompress) compressAt / 100.0 else 0.0))
+                    if (autoCompress) compressAt / 100.0 else 0.0, email = em, organizer = org))
             } catch (e: com.localai.bridge.data.ApiException) {
                 if (e.code == 409) {
                     // the PC is still finishing the previous reply (e.g. the phone was off): show it instead of failing
@@ -359,10 +395,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** The PC says the open chat waits for an approval but no dialog is showing: fetch and show it. */
     private suspend fun restoreMissingApprovals() {
         val sid = currentSessionId ?: return
-        val waiting = tasks?.runs?.any { it.sessionId == sid && it.waitingApproval } == true
-        if (!waiting || approvals.isNotEmpty() || loadingSession) return
-        val pending = runCatching { api!!.session(sid).pendingApprovals }.getOrNull() ?: return
-        if (sid == currentSessionId) pending.filter { p -> approvals.none { it.id == p.id } }.forEach { approvals += it }
+        val run = tasks?.runs?.firstOrNull { it.sessionId == sid } ?: return
+        val needA = run.waitingApproval && approvals.isEmpty()
+        val needQ = run.waitingQuestion && questions.isEmpty()
+        if (!(needA || needQ) || loadingSession) return
+        val s = runCatching { api!!.session(sid) }.getOrNull() ?: return
+        if (sid != currentSessionId) return
+        s.pendingApprovals.filter { p -> approvals.none { it.id == p.id } }.forEach { approvals += it }
+        s.pendingQuestions.filter { p -> questions.none { it.id == p.id } }.forEach { questions += it }
     }
 
     private fun startTaskPolling() {
@@ -376,7 +416,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun onAppBackground() { tasksJob?.cancel() }
+    fun onAppBackground() { tasksJob?.cancel(); pcJob?.cancel() }
+
+    private fun startPcPolling() {
+        pcJob?.cancel()
+        pcJob = viewModelScope.launch {
+            var wasReady = false
+            while (true) {
+                runCatching { api?.v100Status() }.getOrNull()?.let { s ->
+                    pcStatus = s
+                    val ready = s.health == "ready"
+                    if (ready && !wasReady) refreshModels()   // chat model list follows the model loaded on the PC
+                    wasReady = ready
+                }
+                kotlinx.coroutines.delay(3_000)
+            }
+        }
+    }
 
     fun stopTask(sid: String) = viewModelScope.launch {
         try { api?.stopTask(sid); toast = "Stopping…" } catch (e: Exception) { toast = e.message }
@@ -410,7 +466,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Called when the app comes back to the foreground. */
     fun onAppForeground() {
-        if (paired) startTaskPolling()
+        if (paired) { startTaskPolling(); startPcPolling() }
         if (!paired || streaming || currentSessionId == null) return
         viewModelScope.launch { reattach() }
     }
@@ -437,6 +493,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         stats = s.stats ?: stats
         items.clear(); items.addAll(toItems(s.messages, s.summaryUpto))
         approvals.clear(); approvals.addAll(s.pendingApprovals)
+        questions.clear(); questions.addAll(s.pendingQuestions)
+        plan.clear(); plan.addAll(s.plan)
         if (s.running) {
             trimToLastUser()
             streamStartMs = System.currentTimeMillis(); phase = "prompt"
@@ -462,6 +520,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun updateAutoCompress(on: Boolean) { autoCompress = on; prefs.autoCompress = on }
+    fun updateAutoRead(on: Boolean) { autoRead = on; prefs.autoRead = on; if (!on) speaker.stop() }
+    fun updateSpeechRate(r: Float) { speechRate = r; prefs.speechRate = r; speaker.rate = r }
+    /** Read one reply aloud, or stop if it is the one being read. */
+    fun toggleSpeak(key: String, text: String) {
+        if (speakingKey == key) { speaker.stop(); speakingKey = null; return }
+        speakingKey = key; speaker.speak(text)
+    }
+    override fun onCleared() { speaker.shutdown(); super.onCleared() }
     fun updateCompressAt(pct: Int) { compressAt = pct; prefs.compressAt = pct }
 
     /** Reload the finished conversation so every message has its server id (needed for editing). */
@@ -506,16 +572,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (approvals.none { it.id == id })
                     approvals += PendingApproval(id, str(ev, "name"), ev["args"]?.jsonObject ?: JsonObject(emptyMap()))
             }
+            "question_required" -> {
+                val id = str(ev, "id")
+                updateTool(id) { it.copy(status = "awaiting") }
+                if (questions.none { it.id == id }) runCatching {
+                    api!!.json.decodeFromJsonElement<com.localai.bridge.data.PendingQuestion>(ev)
+                }.getOrNull()?.let { questions += it }
+            }
+            "question_answered" -> questions.removeAll { it.id == str(ev, "id") }
+            "tasks" -> runCatching {
+                api!!.json.decodeFromJsonElement<List<com.localai.bridge.data.PlanStep>>(ev["tasks"]!!)
+            }.getOrNull()?.let { plan.clear(); plan.addAll(it) }
             "tool_result" -> {
                 val id = str(ev, "id")
                 approvals.removeAll { it.id == id }
+                questions.removeAll { it.id == id }
                 val atts = runCatching {
                     api!!.json.decodeFromJsonElement<List<AttachmentRef>>(ev["attachments"]!!)
                 }.getOrDefault(emptyList())
                 updateTool(id) { it.copy(output = str(ev, "output"), status = "done", attachments = atts) }
             }
             "title" -> currentTitle = str(ev, "title")
-            "done" -> { turnCompleted = true; turnEnded = true }
+            "done" -> {
+                turnCompleted = true; turnEnded = true
+                if (autoRead) (items.lastOrNull { it is ChatItem.Assistant } as? ChatItem.Assistant)
+                    ?.takeIf { it.text.isNotBlank() }?.let { speakingKey = it.key; speaker.speak(it.text) }
+            }
             "compressed" -> items += ChatItem.Notice(nextKey(),
                 "Compressed ${str(ev, "messages")} earlier messages into a summary - context freed.")
             "notice" -> items += ChatItem.Notice(nextKey(), str(ev, "text"))
@@ -534,9 +616,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         try { api?.approve(p.id, ok) } catch (e: Exception) { toast = e.message }
     }
 
+    /** Send the user's choice for an ask_user question; the reply on the PC continues with it. */
+    fun answerQuestion(q: com.localai.bridge.data.PendingQuestion, answer: String) = viewModelScope.launch {
+        if (answer.isBlank()) return@launch
+        questions.remove(q)
+        updateTool(q.id) { it.copy(status = "running") }
+        try { api?.answerQuestion(q.id, answer) } catch (e: Exception) { toast = e.message }
+    }
+
+    /** Tap on an option the model listed in plain text: send it as the next message. */
+    fun quickReply(text: String) { if (streaming) return; draft = text; send() }
+
     fun stop() = viewModelScope.launch {
         currentSessionId?.let { runCatching { api?.stop(it) } }
-        approvals.clear()
+        approvals.clear(); questions.clear()
     }
 
     // ---------------------------------------------------------------- edit / regenerate / theme
